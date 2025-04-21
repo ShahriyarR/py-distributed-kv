@@ -48,23 +48,32 @@ class WAL:
     def _ensure_log_file_exists(self):
         os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
         if not os.path.exists(self.log_file_path):
-            with open(self.log_file_path, "w") as f:
+            with open(self.log_file_path, "w"):
                 pass  # Create empty file
 
     def _load_last_id(self):
+        """Load the last entry ID from the log file and populate existing IDs set."""
         try:
             with open(self.log_file_path, "r") as f:
-                for line in f:
-                    try:
-                        entry = json.loads(line)
-                        entry_id = entry["id"]
-                        self.existing_ids.add(entry_id)
-                        if entry_id > self.current_id:
-                            self.current_id = entry_id
-                    except (json.JSONDecodeError, KeyError):
-                        pass
+                self._process_log_entries(f)
         except FileNotFoundError:
             self.current_id = 0
+
+    def _process_log_entries(self, file_handle):
+        """Process each line in the log file to extract entry IDs."""
+        for line in file_handle:
+            self._process_log_entry(line)
+
+    def _process_log_entry(self, line):
+        """Process a single log entry line and update tracking data."""
+        try:
+            entry = json.loads(line)
+            entry_id = entry["id"]
+            self.existing_ids.add(entry_id)
+            if entry_id > self.current_id:
+                self.current_id = entry_id
+        except (json.JSONDecodeError, KeyError):
+            pass
 
     def append(self, operation: OperationType, key: str, value: Optional[Any] = None) -> LogEntry:
         self.current_id += 1
