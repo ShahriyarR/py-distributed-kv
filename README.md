@@ -28,6 +28,8 @@ Create virtualenv in the project root directory named ".venv"
 This version is a simple key-value store with basic replication and persistence.
 It uses a write-ahead log (WAL) for durability and a simple HTTP API for replication.
 There is no leader election or conflict resolution, and the system is not fault-tolerant.
+Leader election is done manually by specifying the leader's address in the configuration file.
+Followers each have a copy of the WAL and can apply updates from the leader, followers config is done manually.
 
 Missing critical parts, such as:
 
