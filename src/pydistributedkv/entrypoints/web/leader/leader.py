@@ -1,8 +1,9 @@
 import os
 
+import requests
 from fastapi import FastAPI, HTTPException
 
-from pydistributedkv.domain.models import WAL
+from pydistributedkv.domain.models import KeyValue, WAL
 from pydistributedkv.service.storage import KeyValueStorage
 
 app = FastAPI()
@@ -67,7 +68,7 @@ def delete_key(key: str):
 
 
 @app.post("/register_follower")
-def register_follower(follower_data: Dict[str, str]):
+def register_follower(follower_data: dict[str, str]):
     follower_id = follower_data.get("id")
     follower_url = follower_data.get("url")
 

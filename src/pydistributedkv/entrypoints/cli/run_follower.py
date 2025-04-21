@@ -19,4 +19,4 @@ if __name__ == "__main__":
     os.environ["FOLLOWER_ID"] = follower_id
     os.environ["FOLLOWER_URL"] = config["follower_url"]
 
-    uvicorn.run("follower.server:app", host=config["host"], port=config["port"], reload=True)
+    uvicorn.run("pydistributedkv.entrypoints.web.follower.follower:app", host=config["host"], port=config["port"], reload=True)

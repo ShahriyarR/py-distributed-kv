@@ -1,0 +1,11 @@
+### GET request to leader server
+GET http://localhost:8000/key/mykey
+
+### GET request to follower server
+
+GET http://localhost:8001/key/mykey
+
+
+### GET request to leader server
+
+GET http://localhost:8000/key/new
