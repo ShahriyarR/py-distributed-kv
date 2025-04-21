@@ -3,7 +3,7 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException
 
-from pydistributedkv.domain.models import KeyValue, WAL
+from pydistributedkv.domain.models import FollowerRegistration, KeyValue, WAL
 from pydistributedkv.service.storage import KeyValueStorage
 
 app = FastAPI()
@@ -68,15 +68,13 @@ def delete_key(key: str):
 
 
 @app.post("/register_follower")
-def register_follower(follower_data: dict[str, str]):
-    follower_id = follower_data.get("id")
-    follower_url = follower_data.get("url")
-
-    if not follower_id or not follower_url:
-        raise HTTPException(status_code=400, detail="Missing id or url")
+def register_follower(follower_data: FollowerRegistration):
+    follower_id = follower_data.id
+    follower_url = follower_data.url
+    last_applied_id = follower_data.last_applied_id
 
     followers[follower_id] = follower_url
-    replication_status[follower_id] = 0
+    replication_status[follower_id] = last_applied_id
 
     return {"status": "ok", "last_log_id": wal.get_last_id()}
 

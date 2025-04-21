@@ -18,16 +18,17 @@ follower_id = os.getenv("FOLLOWER_ID", "follower-1")
 follower_url = os.getenv("FOLLOWER_URL", "http://localhost:8001")
 
 # Replication state
-last_applied_id = 0
+last_applied_id = wal.get_last_id()  # Initialize with the current last ID in WAL
 
 
 @app.on_event("startup")
 async def startup_event():
+    global last_applied_id
     # Register with leader
     try:
         response = requests.post(
             f"{leader_url}/register_follower",
-            json={"id": follower_id, "url": follower_url},
+            json={"id": follower_id, "url": follower_url, "last_applied_id": last_applied_id},
         )
         response_data = response.json()
 
@@ -35,9 +36,9 @@ async def startup_event():
         leader_last_id = response_data.get("last_log_id", 0)
         if leader_last_id > last_applied_id:
             await sync_with_leader()
-    except requests.RequestException:
+    except requests.RequestException as e:
         # In production, you'd implement retry logic
-        print(f"Failed to register with leader at {leader_url}")
+        print(f"Failed to register with leader at {leader_url}: {str(e)}")
 
 
 async def sync_with_leader():
@@ -48,11 +49,17 @@ async def sync_with_leader():
 
         entries = [LogEntry(**entry) for entry in data.get("entries", [])]
         if entries:
-            # Append entries to the follower's WAL
+            # Append entries to the follower's WAL without duplicating
+            new_entries = []
             for entry in entries:
-                wal.append(entry.operation, entry.key, entry.value)
-            last_id = storage.apply_entries(entries)
-            last_applied_id = last_id
+                if not wal.has_entry(entry.id):
+                    wal.append_entry(entry)
+                    new_entries.append(entry)
+
+            # Only apply new entries to the storage
+            if new_entries:
+                last_id = storage.apply_entries(new_entries)
+                last_applied_id = last_id
     except requests.RequestException:
         print("Failed to sync with leader")
 
@@ -62,13 +69,18 @@ async def replicate(req: ReplicationRequest):
     global last_applied_id
     entries = [LogEntry(**entry) for entry in req.entries]
     if entries:
-        # Append entries to the follower's WAL
+        # Only process new entries
+        new_entries = []
         for entry in entries:
-            wal.append(entry.operation, entry.key, entry.value)
+            if not wal.has_entry(entry.id):
+                wal.append_entry(entry)
+                new_entries.append(entry)
 
-        # Apply entries to the in-memory state
-        last_id = storage.apply_entries(entries)
-        last_applied_id = max(last_applied_id, last_id)
+        # Apply only new entries to the in-memory state
+        if new_entries:
+            last_id = storage.apply_entries(new_entries)
+            last_applied_id = max(last_applied_id, last_id)
+
     return {"status": "ok", "last_applied_id": last_applied_id}
 
 
