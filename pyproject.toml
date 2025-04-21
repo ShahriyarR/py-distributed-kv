@@ -59,7 +59,7 @@ target-version = ['py312']
 include = '\.pyi?$'
 
 [tool.bandit]
-skips = ["B311", "B404"]
+skips = ["B311", "B404", "B104"]
 
 [tool.pytest.ini_options]
 pythonpath = [

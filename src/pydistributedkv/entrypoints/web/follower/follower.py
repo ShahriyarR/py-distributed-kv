@@ -3,6 +3,7 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException
 
+from pydistributedkv.configurator.settings.base import API_TIMEOUT
 from pydistributedkv.domain.models import LogEntry, ReplicationRequest, WAL
 from pydistributedkv.service.storage import KeyValueStorage
 
@@ -23,12 +24,13 @@ last_applied_id = wal.get_last_id()  # Initialize with the current last ID in WA
 
 @app.on_event("startup")
 async def startup_event():
-    global last_applied_id
+    global last_applied_id  # noqa: F824
     # Register with leader
     try:
         response = requests.post(
             f"{leader_url}/register_follower",
             json={"id": follower_id, "url": follower_url, "last_applied_id": last_applied_id},
+            timeout=API_TIMEOUT,
         )
         response_data = response.json()
 
@@ -42,46 +44,67 @@ async def startup_event():
 
 
 async def sync_with_leader():
+    """Synchronize the follower with the leader by fetching and applying new log entries."""
     global last_applied_id
     try:
-        response = requests.get(f"{leader_url}/log_entries/{last_applied_id}")
-        data = response.json()
+        entries = await fetch_entries_from_leader()
+        if not entries:
+            return
 
-        entries = [LogEntry(**entry) for entry in data.get("entries", [])]
-        if entries:
-            # Append entries to the follower's WAL without duplicating
-            new_entries = []
-            for entry in entries:
-                if not wal.has_entry(entry.id):
-                    wal.append_entry(entry)
-                    new_entries.append(entry)
-
-            # Only apply new entries to the storage
-            if new_entries:
-                last_id = storage.apply_entries(new_entries)
-                last_applied_id = last_id
+        new_entries = append_entries_to_wal(entries)
+        if new_entries:
+            last_applied_id = apply_entries_to_storage(new_entries)
     except requests.RequestException:
         print("Failed to sync with leader")
+
+
+async def fetch_entries_from_leader() -> list[LogEntry]:
+    """Fetch new log entries from the leader."""
+    response = requests.get(f"{leader_url}/log_entries/{last_applied_id}", timeout=API_TIMEOUT)
+    data = response.json()
+    return [LogEntry(**entry) for entry in data.get("entries", [])]
+
+
+def append_entries_to_wal(entries: list[LogEntry]) -> list[LogEntry]:
+    """Append new entries to the WAL and return only the newly added ones."""
+    new_entries = []
+    for entry in entries:
+        if not wal.has_entry(entry.id):
+            wal.append_entry(entry)
+            new_entries.append(entry)
+    return new_entries
+
+
+def apply_entries_to_storage(entries: list[LogEntry]) -> int:
+    """Apply entries to storage and return the last applied ID."""
+    return storage.apply_entries(entries)
 
 
 @app.post("/replicate")
 async def replicate(req: ReplicationRequest):
     global last_applied_id
     entries = [LogEntry(**entry) for entry in req.entries]
-    if entries:
-        # Only process new entries
-        new_entries = []
-        for entry in entries:
-            if not wal.has_entry(entry.id):
-                wal.append_entry(entry)
-                new_entries.append(entry)
+    new_entries = _process_new_entries(entries)
 
-        # Apply only new entries to the in-memory state
-        if new_entries:
-            last_id = storage.apply_entries(new_entries)
-            last_applied_id = max(last_applied_id, last_id)
+    # Apply only new entries to the in-memory state
+    if new_entries:
+        last_id = storage.apply_entries(new_entries)
+        last_applied_id = max(last_applied_id, last_id)
 
     return {"status": "ok", "last_applied_id": last_applied_id}
+
+
+def _process_new_entries(entries: list[LogEntry]) -> list[LogEntry]:
+    """Process and store only entries that don't exist in the WAL."""
+    if not entries:
+        return []
+
+    new_entries = []
+    for entry in entries:
+        if not wal.has_entry(entry.id):
+            wal.append_entry(entry)
+            new_entries.append(entry)
+    return new_entries
 
 
 @app.get("/key/{key}")

@@ -3,6 +3,7 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException
 
+from pydistributedkv.configurator.settings.base import API_TIMEOUT
 from pydistributedkv.domain.models import FollowerRegistration, KeyValue, WAL
 from pydistributedkv.service.storage import KeyValueStorage
 
@@ -34,10 +35,7 @@ def set_key(key: str, kv: KeyValue):
     # (e.g., with a background task queue)
     for follower_id, follower_url in followers.items():
         try:
-            requests.post(
-                f"{follower_url}/replicate",
-                json={"entries": [entry.model_dump()]},
-            )
+            requests.post(f"{follower_url}/replicate", json={"entries": [entry.model_dump()]}, timeout=API_TIMEOUT)
             replication_status[follower_id] = entry.id
         except requests.RequestException:
             # In production, you'd want better error handling and retry logic
@@ -58,6 +56,7 @@ def delete_key(key: str):
             requests.post(
                 f"{follower_url}/replicate",
                 json={"entries": [entry.model_dump()]},
+                timeout=API_TIMEOUT,
             )
             replication_status[follower_id] = entry.id
         except requests.RequestException:

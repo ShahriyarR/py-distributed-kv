@@ -7,7 +7,7 @@ from pydistributedkv.configurator.settings.config import FOLLOWER_CONFIGS
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in FOLLOWER_CONFIGS:
-        print(f"Usage: python run_follower.py <follower_id>")
+        print("Usage: python run_follower.py <follower_id>")
         print(f"Available follower IDs: {list(FOLLOWER_CONFIGS.keys())}")
         sys.exit(1)
 
