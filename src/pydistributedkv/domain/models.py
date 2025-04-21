@@ -1,7 +1,7 @@
 import json
 import os
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Set
 
 from pydantic import BaseModel
 
@@ -31,10 +31,17 @@ class ReplicationRequest(BaseModel):
     entries: list[dict[str, Any]]
 
 
+class FollowerRegistration(BaseModel):
+    id: str
+    url: str
+    last_applied_id: int = 0
+
+
 class WAL:
     def __init__(self, log_file_path: str):
         self.log_file_path = log_file_path
         self.current_id = 0
+        self.existing_ids: Set[int] = set()
         self._ensure_log_file_exists()
         self._load_last_id()
 
@@ -47,21 +54,42 @@ class WAL:
     def _load_last_id(self):
         try:
             with open(self.log_file_path, "r") as f:
-                lines = f.readlines()
-                if lines:
-                    last_entry = json.loads(lines[-1])
-                    self.current_id = last_entry["id"]
-        except (json.JSONDecodeError, IndexError, KeyError):
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        entry_id = entry["id"]
+                        self.existing_ids.add(entry_id)
+                        if entry_id > self.current_id:
+                            self.current_id = entry_id
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+        except FileNotFoundError:
             self.current_id = 0
 
     def append(self, operation: OperationType, key: str, value: Optional[Any] = None) -> LogEntry:
         self.current_id += 1
         entry = LogEntry(id=self.current_id, operation=operation, key=key, value=value)
+        return self.append_entry(entry)
+
+    def append_entry(self, entry: LogEntry) -> LogEntry:
+        """Append a pre-created entry, used for replication"""
+        # Skip if entry already exists
+        if entry.id in self.existing_ids:
+            return entry
+
+        # Update current_id if needed
+        if entry.id > self.current_id:
+            self.current_id = entry.id
 
         with open(self.log_file_path, "a") as f:
             f.write(json.dumps(entry.model_dump()) + "\n")
 
+        self.existing_ids.add(entry.id)
         return entry
+
+    def has_entry(self, entry_id: int) -> bool:
+        """Check if an entry with the given ID already exists in the WAL"""
+        return entry_id in self.existing_ids
 
     def read_from(self, start_id: int = 0) -> list[LogEntry]:
         entries = []
