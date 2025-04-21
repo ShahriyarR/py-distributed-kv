@@ -13,12 +13,12 @@ See [Development Stages](#development-stages) for more details.
 
 > **Note:** This version is not production-ready and is intended for educational purposes only.
 
-This version is a simple key-value store with basic replication and persistence.
-It uses a write-ahead log (WAL) for durability and a simple HTTP API for replication using FastAPI.
-In this version of WAL, there is no checkpointing, compression, compaction, snapshots or sharding.
-There is no leader election or conflict resolution, and the system is not fault-tolerant.
-Leader election is done manually by specifying the leader's address in the configuration file.
-Followers each have a copy of the WAL and can apply updates from the leader, followers config is done manually.
+* This version is a simple key-value store with basic replication and persistence.
+* It uses a write-ahead log (WAL) for durability and a simple HTTP API for replication using FastAPI.
+* In this version of WAL, there is no checkpointing, compression, compaction, snapshots or sharding.
+* There is no leader election or conflict resolution, and the system is not fault-tolerant.
+* Leader election is done manually by specifying the leader's address in the configuration file.
+* Followers each have a copy of the WAL and can apply updates from the leader, followers config is done manually.
 
 > Few reading material about WAL:
 > - [Write-Ahead Logging](https://en.wikipedia.org/wiki/Write-ahead_logging)
