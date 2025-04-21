@@ -3,7 +3,7 @@ requires = ["flit_core==3.8.0"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "pytemplate"
+name = "pydistributedkv"
 authors = [
     { name = "rzayev sehriyar", email = "rzayev.sehriyar@gmail.com" },
 ]
@@ -36,7 +36,7 @@ test = [
 [tool.isort]
 profile = "black"
 line_length = 140
-py_version = 311
+py_version = 312
 order_by_type = false
 skip = [".gitignore", ".dockerignore"]
 extend_skip = [".md", ".json"]
@@ -50,7 +50,7 @@ exclude = ["__init__.py"]
 
 [tool.black]
 line-length = 140
-target-version = ['py311']
+target-version = ['py312']
 include = '\.pyi?$'
 
 [tool.bandit]
