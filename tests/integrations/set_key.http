@@ -1,0 +1,16 @@
+### PUT request to leader server
+PUT http://localhost:8000/key/mykey
+Content-Type: application/json
+
+{"value": "myvalue"}
+
+
+### Another request
+
+PUT http://localhost:8000/key/new
+Content-Type: application/json
+
+{"value": "new-myvalue"}
+
+
+

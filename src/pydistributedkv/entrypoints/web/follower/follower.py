@@ -48,6 +48,9 @@ async def sync_with_leader():
 
         entries = [LogEntry(**entry) for entry in data.get("entries", [])]
         if entries:
+            # Append entries to the follower's WAL
+            for entry in entries:
+                wal.append(entry.operation, entry.key, entry.value)
             last_id = storage.apply_entries(entries)
             last_applied_id = last_id
     except requests.RequestException:
@@ -59,6 +62,11 @@ async def replicate(req: ReplicationRequest):
     global last_applied_id
     entries = [LogEntry(**entry) for entry in req.entries]
     if entries:
+        # Append entries to the follower's WAL
+        for entry in entries:
+            wal.append(entry.operation, entry.key, entry.value)
+
+        # Apply entries to the in-memory state
         last_id = storage.apply_entries(entries)
         last_applied_id = max(last_applied_id, last_id)
     return {"status": "ok", "last_applied_id": last_applied_id}

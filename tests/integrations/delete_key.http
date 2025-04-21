@@ -1,0 +1,2 @@
+### DELETE request to leader server
+DELETE http://localhost:8000/key/mykey
