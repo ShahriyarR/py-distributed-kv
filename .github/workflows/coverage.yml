@@ -1,0 +1,54 @@
+name: Pytest Coverage Check
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  checks: write
+  pull-requests: write
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 
+        uses: actions/setup-python@v3
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: | 
+          pip install --upgrade pip && pip install virtualenv && virtualenv .venv
+          make install-flit && FLIT_ROOT_INSTALL=1 make install-dev
+
+      - name: Run tests and check coverage
+        id: coverage_check
+        run: |
+          .venv/bin/python -m pytest --cov=src --cov-report=term-missing
+          .venv/bin/python -m coverage report --fail-under=96
+        continue-on-error: true
+
+      - name: Post PR comment about coverage failure
+        if: ${{ steps.coverage_check.outcome == 'failure' }}
+        uses: actions/github-script@v5
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const message = `🚨 The code coverage is below the specified threshold. Please add more tests to improve coverage. 🚨`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: message
+            });
+      
+      - name: Fail if coverage is under threshold
+        if: ${{ steps.coverage_check.outcome == 'failure' }}
+        run: exit 1

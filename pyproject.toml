@@ -1,0 +1,74 @@
+[build-system]
+requires = ["flit_core==3.8.0"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "pytemplate"
+authors = [
+    { name = "rzayev sehriyar", email = "rzayev.sehriyar@gmail.com" },
+]
+dynamic = ["version"]
+description = "This is a Python Project Template"
+# Add here the production dependencies
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "autoflake",
+    "pytype; platform_system != 'Windows'",
+    "flake8",
+    "Flake8-pyproject",
+    "bandit",
+    "flake8-bugbear",
+    "flake8-cognitive-complexity",
+    "pre-commit",
+    "safety",
+    "pip-audit",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+]
+
+[tool.isort]
+profile = "black"
+line_length = 140
+py_version = 311
+order_by_type = false
+skip = [".gitignore", ".dockerignore"]
+extend_skip = [".md", ".json"]
+skip_glob = ["docs/*"]
+
+[tool.flake8]
+max-line-length = 140
+select = ["C", "E", "F", "W", "B", "B9"]
+ignore = ["E203", "E501", "W503", "C812", "E731", "F811"]
+exclude = ["__init__.py"]
+
+[tool.black]
+line-length = 140
+target-version = ['py311']
+include = '\.pyi?$'
+
+[tool.bandit]
+skips = ["B311", "B404"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "src"
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration relatively slow (deselect with '-m \"not integration\"')",
+    "serial",
+]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+
+testpaths = "tests"

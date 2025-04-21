@@ -1,0 +1,52 @@
+name: Branch Naming Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  checks: write
+  pull-requests: write
+
+jobs:
+  validate-branch-name:
+    runs-on: ubuntu-latest
+    outputs:
+      valid: ${{ steps.check_branch.outputs.valid }}
+    steps:
+      - name: Check branch name pattern
+        id: check_branch
+        run: |
+          PR_BRANCH="${{ github.head_ref }}"
+          BRANCH_PATTERN="^launch_[0-9]+_task_[0-9]+$"
+          if ! [[ "$PR_BRANCH" =~ $BRANCH_PATTERN ]]; then
+            echo "Branch name does not follow the 'launch_{number}_task_{number}' pattern."
+            echo "valid=false" >> $GITHUB_ENV
+          else
+            echo "Branch name follows the correct pattern."
+            echo "valid=true" >> $GITHUB_ENV
+          fi
+
+      - name: Comment on PR if branch name is invalid
+        if: env.valid == 'false'
+        uses: actions/github-script@v5
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const message = `Hello @${{ github.actor }} 👋, \
+            \n\nThe branch name \`${{ github.head_ref }}\` does not follow the required pattern 'launch\\_{number}\\_task\\_{number}'. \
+            \nPlease update the branch name to match the required format.`;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: message
+            });
+
+      - name: Fail workflow if branch name is invalid
+        if: env.valid == 'false'
+        run: |
+          echo "Failing the workflow because the branch name is not valid."
+          exit 1

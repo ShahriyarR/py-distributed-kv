@@ -1,0 +1,49 @@
+name: Pull Request Body Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  checks: write
+  pull-requests: write
+
+jobs:
+  check-pr-body:
+    runs-on: ubuntu-latest
+    outputs:
+      body_check_failed: ${{ steps.body_check.outputs.valid }}
+    steps:
+      - name: Check if the PR body contains 'Closes #'
+        id: body_check
+        run: |
+          PR_BODY_PATTERN="Closes #[0-9]+"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          if ! [[ "$PR_BODY" =~ $PR_BODY_PATTERN ]]; then
+            echo "valid=false" >> $GITHUB_ENV
+          else
+            echo "valid=true" >> $GITHUB_ENV
+          fi
+
+      - name: Comment on PR, if body check, fails
+        if: env.valid == 'false'
+        uses: actions/github-script@v5
+        with:
+          script: |
+            const issueComment = `Hello @${{ github.actor }} 👋, \
+            \n\nIt looks like your PR description is missing 'Closes #'. \
+            \nPlease include the phrase 'Closes #issue_ID' to indicate which issue this PR closes.`;
+            github.rest.issues.createComment({
+              issue_number: ${{ github.event.pull_request.number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: issueComment
+            });
+            
+      - name: Fail workflow if PR description is missing Closes #
+        if: env.valid == 'false'
+        run: |
+          echo "Failing the workflow because PR description is missing Closes #."
+          exit 1

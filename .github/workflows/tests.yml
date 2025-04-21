@@ -1,0 +1,37 @@
+name: Test and Comment
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  checks: write
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: | 
+          pip install --upgrade pip && pip install virtualenv && virtualenv .venv
+          make install-flit && FLIT_ROOT_INSTALL=1 make install-dev
+
+      - name: Run Python tests
+        run: .venv/bin/python -m pytest --junit-xml=test-results/results.xml
+
+      - name: Comment on PR
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: |
+            test-results/**/*.xml
