@@ -58,13 +58,13 @@ python src/pydistributedkv/entrypoints/cli/run_follower.py follower-3
 tree data/
 data/
 ├── followers
-│   ├── follower-1
-│   │   └── wal.log
-│   ├── follower-2
-│   │   └── wal.log
-│   ├── follower-3
-│   │   └── wal.log
-│   └── follower-4
+│   ├── follower-1
+│   │   └── wal.log
+│   ├── follower-2
+│   │   └── wal.log
+│   ├── follower-3
+│   │   └── wal.log
+│   └── follower-4
 └── leader
     └── wal.log
 
@@ -122,10 +122,40 @@ curl  "http://localhost:8002/key/key6"
 {"id": 15, "operation": "DELETE", "key": "key6", "value": null}
 ```
 
+### v1.1.0
+
+> **Added feature:** Data integrity with CRC validation.
+
+This version adds data integrity features to ensure the reliability of stored data across the distributed system:
+
+* **CRC32 Checksums:** Each log entry now includes a Cyclic Redundancy Check (CRC32) to detect data corruption.
+* **Validation on Read:** When entries are read from the WAL, their CRCs are verified to ensure data hasn't been corrupted.
+* **Skip Invalid Entries:** Corrupted entries are automatically detected and skipped during log replay and replication.
+* **Auto-correction:** When an entry with an invalid CRC is appended, the system automatically recalculates the correct CRC.
+
+These improvements ensure:
+* Data integrity is maintained during storage and replication
+* The system can detect and handle corruption without crashing
+* Followers won't apply corrupted data received from the leader
+* Better reliability for long-term data storage
+
+How it works:
+1. When a log entry is created, a CRC32 checksum is calculated based on all fields except the CRC itself
+2. Upon reading entries from disk, the CRC is validated by recalculating and comparing
+3. During replication, entries are validated before being applied to followers' state
+
+Example of a WAL entry with CRC (the CRC value is a 32-bit integer):
+
+```json
+{"id": 14, "operation": "SET", "key": "key6", "value": "myvalue", "crc": 3641357794}
+```
+
+To test this version, checkout to the v1.1.0 branch and follow the same setup instructions as v1.0.0.
+
 
 ## TODO
 
-- [ ] Checksums: Add checksums to the WAL entries to ensure data integrity.
+- [x] Checksums: Add checksums to the WAL entries to ensure data integrity.
 - [ ] Compression: Add support for compressing the WAL files to save disk space.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
 - [ ] Fault Tolerance: 
@@ -143,5 +173,4 @@ curl  "http://localhost:8002/key/key6"
 Each iteration will state the missing parts and the future improvements.
 
 #### Authors:  [Shahriyar Rzayev](https://www.linkedin.com/in/shahriyar-rzayev/)
-
 

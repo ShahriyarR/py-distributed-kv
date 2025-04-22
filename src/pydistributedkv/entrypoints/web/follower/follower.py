@@ -62,14 +62,27 @@ async def fetch_entries_from_leader() -> list[LogEntry]:
     """Fetch new log entries from the leader."""
     response = requests.get(f"{leader_url}/log_entries/{last_applied_id}", timeout=API_TIMEOUT)
     data = response.json()
-    return [LogEntry(**entry) for entry in data.get("entries", [])]
+    entries = []
+
+    for entry_data in data.get("entries", []):
+        try:
+            entry = LogEntry(**entry_data)
+            if entry.validate_crc():
+                entries.append(entry)
+            else:
+                print(f"Warning: Received entry with ID {entry.id} with invalid CRC from leader")
+        except ValueError as e:
+            print(f"Error parsing entry from leader: {str(e)}")
+
+    return entries
 
 
 def append_entries_to_wal(entries: list[LogEntry]) -> list[LogEntry]:
     """Append new entries to the WAL and return only the newly added ones."""
     new_entries = []
     for entry in entries:
-        if not wal.has_entry(entry.id):
+        # Ensure we only add entries with valid CRC
+        if entry.validate_crc() and not wal.has_entry(entry.id):
             wal.append_entry(entry)
             new_entries.append(entry)
     return new_entries
@@ -83,7 +96,19 @@ def apply_entries_to_storage(entries: list[LogEntry]) -> int:
 @app.post("/replicate")
 async def replicate(req: ReplicationRequest):
     global last_applied_id
-    entries = [LogEntry(**entry) for entry in req.entries]
+    entries = []
+
+    # Create and validate entries
+    for entry_data in req.entries:
+        try:
+            entry = LogEntry(**entry_data)
+            if entry.validate_crc():
+                entries.append(entry)
+            else:
+                print(f"Warning: Received entry with ID {entry.id} with invalid CRC")
+        except ValueError as e:
+            print(f"Error parsing entry: {str(e)}")
+
     new_entries = _process_new_entries(entries)
 
     # Apply only new entries to the in-memory state

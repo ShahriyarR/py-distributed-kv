@@ -1,14 +1,7 @@
 # test_distributed_kv.py
 import os
 import shutil
-import signal
-import subprocess
 import tempfile
-import time
-from pathlib import Path
-
-import pytest
-import requests
 
 from pydistributedkv.domain.models import OperationType, WAL
 from pydistributedkv.service.storage import KeyValueStorage
