@@ -152,10 +152,67 @@ Example of a WAL entry with CRC (the CRC value is a 32-bit integer):
 
 To test this version, checkout to the v1.1.0 branch and follow the same setup instructions as v1.0.0.
 
+### v1.2.0
+
+> **Added feature:** Segmented Log for better performance and reliability.
+
+This version introduces segmented logs to improve the performance and maintainability of the distributed key-value store:
+
+* **Log Segmentation:** The Write-Ahead Log (WAL) is now split into multiple segment files of configurable size.
+* **Automatic Log Rolling:** When a segment reaches its configured size limit, a new segment is created automatically.
+* **Improved Scalability:** Segmented logs allow the system to handle much larger datasets without performance degradation.
+* **Segment Management:** New API endpoints added to monitor and manage log segments.
+
+Benefits of segmented logs:
+* Prevents unbounded log growth in a single file
+* Reduces I/O pressure on the system
+* Makes log maintenance operations like compaction and pruning more efficient
+* Enables faster startup times by allowing parallel processing of segments
+
+How it works:
+1. The WAL is split into multiple segment files with sequential numbering (e.g., `wal.log.segment.1`, `wal.log.segment.2`)
+2. Each segment has a configurable maximum size (default: 1MB)
+3. When a segment reaches its size limit, the system automatically rolls over to a new segment
+4. Read operations gather data from all segments in the correct order
+
+To test this version:
+1. Set the segment size with the environment variable `MAX_SEGMENT_SIZE` (in bytes). Default is 1MB.
+2. Use `/segments` endpoint on leader or followers to view segment information.
+
+Example segment structure:
+
+```bash
+data/
+├── followers
+│   └── follower-1
+│       ├── wal.log.segment.1
+│       ├── wal.log.segment.2
+│       └── wal.log.segment.3
+└── leader
+    ├── wal.log.segment.1
+    └── wal.log.segment.2
+```
+
+To view segment information:
+
+```bash
+curl http://localhost:8000/segments
+
+{
+  "segments": [
+    {"path": "data/leader/wal.log.segment.1", "size": 1048576, "is_active": false},
+    {"path": "data/leader/wal.log.segment.2", "size": 325420, "is_active": true}
+  ],
+  "total_segments": 2,
+  "max_segment_size": 1048576
+}
+```
+
 
 ## TODO
 
 - [x] Checksums: Add checksums to the WAL entries to ensure data integrity.
+- [x] Segmented Log: Split WAL into multiple segment files that roll over after configured size limit.
 - [ ] Compression: Add support for compressing the WAL files to save disk space.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
 - [ ] Fault Tolerance: 

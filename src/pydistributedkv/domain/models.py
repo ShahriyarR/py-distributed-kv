@@ -1,8 +1,9 @@
+import glob
 import json
 import os
 import zlib
 from enum import Enum
-from typing import Any, Optional, Set
+from typing import Any, List, Optional, Set
 
 from pydantic import BaseModel
 
@@ -55,26 +56,67 @@ class FollowerRegistration(BaseModel):
 
 
 class WAL:
-    def __init__(self, log_file_path: str):
-        self.log_file_path = log_file_path
+    def __init__(self, log_file_path: str, max_segment_size: int = 1024 * 1024):  # Default 1MB per segment
+        self.log_dir = os.path.dirname(log_file_path)
+        self.base_name = os.path.basename(log_file_path)
+        self.max_segment_size = max_segment_size
         self.current_id = 0
         self.existing_ids: Set[int] = set()
-        self._ensure_log_file_exists()
-        self._load_last_id()
+        self.active_segment_path = ""
 
-    def _ensure_log_file_exists(self):
-        os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
-        if not os.path.exists(self.log_file_path):
-            with open(self.log_file_path, "w"):
+        self._ensure_log_dir_exists()
+        self._initialize_segments()
+
+    def _ensure_log_dir_exists(self):
+        """Ensure that the directory for log files exists."""
+        os.makedirs(self.log_dir, exist_ok=True)
+
+    def _initialize_segments(self):
+        """Initialize segments, find existing ones, and determine the active segment."""
+        segments = self._get_all_segments()
+
+        if not segments:
+            # No segments yet, create the first one
+            self.active_segment_path = self._create_segment_path(1)
+            with open(self.active_segment_path, "w"):
                 pass  # Create empty file
+        else:
+            # Find the highest segment
+            latest_segment = segments[-1]
+            self.active_segment_path = latest_segment
 
-    def _load_last_id(self):
-        """Load the last entry ID from the log file and populate existing IDs set."""
+        self._load_all_entries()
+
+    def _get_all_segments(self) -> List[str]:
+        """Get all segment files sorted by segment number."""
+        segment_pattern = os.path.join(self.log_dir, f"{self.base_name}.segment.*")
+        segments = sorted(glob.glob(segment_pattern), key=self._extract_segment_number)
+        return segments
+
+    def _extract_segment_number(self, segment_path: str) -> int:
+        """Extract the segment number from a segment file path."""
         try:
-            with open(self.log_file_path, "r") as f:
+            return int(segment_path.split(".")[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    def _create_segment_path(self, segment_number: int) -> str:
+        """Create a path for a new segment file with the given number."""
+        return os.path.join(self.log_dir, f"{self.base_name}.segment.{segment_number}")
+
+    def _load_all_entries(self):
+        """Load all entries from all segments to populate existing IDs and determine current ID."""
+        segments = self._get_all_segments()
+        for segment in segments:
+            self._load_entries_from_file(segment)
+
+    def _load_entries_from_file(self, file_path: str):
+        """Load entries from a specific file."""
+        try:
+            with open(file_path, "r") as f:
                 self._process_log_entries(f)
         except FileNotFoundError:
-            self.current_id = 0
+            pass
 
     def _process_log_entries(self, file_handle):
         """Process each line in the log file to extract entry IDs."""
@@ -111,6 +153,25 @@ class WAL:
         if entry_id > self.current_id:
             self.current_id = entry_id
 
+    def _get_next_segment_number(self) -> int:
+        """Get the next segment number based on the active segment."""
+        current_segment_num = self._extract_segment_number(self.active_segment_path)
+        return current_segment_num + 1
+
+    def _roll_segment_if_needed(self):
+        """Roll over to a new segment file if the current one exceeds the size limit."""
+        try:
+            if os.path.getsize(self.active_segment_path) >= self.max_segment_size:
+                next_segment_num = self._get_next_segment_number()
+                self.active_segment_path = self._create_segment_path(next_segment_num)
+                # Create the new empty segment file
+                with open(self.active_segment_path, "w"):
+                    pass
+                print(f"Rolled over to new segment: {self.active_segment_path}")
+        except OSError:
+            # If there's an issue checking the file size, just continue with the current segment
+            pass
+
     def append(self, operation: OperationType, key: str, value: Optional[Any] = None) -> LogEntry:
         self.current_id += 1
         entry = LogEntry(id=self.current_id, operation=operation, key=key, value=value)
@@ -135,7 +196,11 @@ class WAL:
             # Recalculate CRC if invalid
             entry.crc = entry.calculate_crc()
 
-        with open(self.log_file_path, "a") as f:
+        # Check if we need to roll over to a new segment
+        self._roll_segment_if_needed()
+
+        # Append entry to the active segment
+        with open(self.active_segment_path, "a") as f:
             f.write(json.dumps(entry.model_dump()) + "\n")
 
         self.existing_ids.add(entry.id)
@@ -146,18 +211,33 @@ class WAL:
         return entry_id in self.existing_ids
 
     def read_from(self, start_id: int = 0) -> list[LogEntry]:
-        """Read log entries with ID >= start_id."""
+        """Read log entries with ID >= start_id from all segments."""
         entries = []
 
-        try:
-            with open(self.log_file_path, "r") as f:
-                for line in f:
-                    entry = self._parse_log_entry(line)
-                    if entry and self._should_include_entry(entry, start_id):
-                        entries.append(entry)
-        except FileNotFoundError:
-            pass
+        # Get all segments
+        segments = self._get_all_segments()
 
+        # Process each segment
+        for segment in segments:
+            try:
+                self._append_entries(entries, segment, start_id)
+            except FileNotFoundError:
+                continue
+
+        # Sort entries by ID to ensure correct order
+        entries.sort(key=lambda e: e.id)
+        return entries
+
+    def _append_entries(self, entries, segment, start_id):
+        with open(segment, "r") as f:
+            for line in f:
+                try:
+                    entry = self._parse_log_entry(line)
+                    if self._should_include_entry(entry, start_id):
+                        entries.append(entry)
+                except (json.JSONDecodeError, ValueError) as e:
+                    print(f"Error parsing log entry: {str(e)}")
+                    continue
         return entries
 
     def _parse_log_entry(self, line: str) -> Optional[LogEntry]:
@@ -182,3 +262,11 @@ class WAL:
 
     def get_last_id(self) -> int:
         return self.current_id
+
+    def get_segment_files(self) -> List[str]:
+        """Get a list of all segment files."""
+        return self._get_all_segments()
+
+    def get_active_segment(self) -> str:
+        """Get the path of the currently active segment."""
+        return self.active_segment_path
