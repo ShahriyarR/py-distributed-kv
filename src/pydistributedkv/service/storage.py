@@ -12,8 +12,17 @@ class KeyValueStorage:
     def _replay_log(self):
         """Replay the WAL to rebuild the in-memory state"""
         entries = self.wal.read_from(0)
-        for entry in entries:
+        entries_count = len(entries)
+        print(f"Replaying {entries_count} entries from WAL...")
+
+        for i, entry in enumerate(entries):
             self._apply_log_entry(entry)
+
+            # Log progress for larger datasets
+            if entries_count > 1000 and i % 1000 == 0:
+                print(f"Replayed {i}/{entries_count} entries...")
+
+        print(f"Finished replaying {entries_count} entries, data store contains {len(self.data)} keys")
 
     def _apply_log_entry(self, entry: LogEntry) -> None:
         """Apply a single log entry to the in-memory state"""
@@ -48,3 +57,7 @@ class KeyValueStorage:
             self._apply_log_entry(entry)
             last_id = entry.id
         return last_id
+
+    def get_all_keys(self) -> List[str]:
+        """Get a list of all keys in the storage"""
+        return list(self.data.keys())

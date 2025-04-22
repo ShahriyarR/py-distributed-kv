@@ -3,14 +3,14 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException
 
-from pydistributedkv.configurator.settings.base import API_TIMEOUT
+from pydistributedkv.configurator.settings.base import API_TIMEOUT, MAX_SEGMENT_SIZE
 from pydistributedkv.domain.models import FollowerRegistration, KeyValue, WAL
 from pydistributedkv.service.storage import KeyValueStorage
 
 app = FastAPI()
 
 # Initialize WAL and storage
-wal = WAL(os.getenv("WAL_PATH", "data/leader/wal.log"))
+wal = WAL(os.getenv("WAL_PATH", "data/leader/wal.log"), max_segment_size=MAX_SEGMENT_SIZE)
 storage = KeyValueStorage(wal)
 
 # Track followers and their replication status
@@ -89,3 +89,27 @@ def get_follower_status():
     return {
         "followers": [{"id": f_id, "url": url, "last_replicated_id": replication_status.get(f_id, 0)} for f_id, url in followers.items()]
     }
+
+
+@app.get("/segments")
+def get_segments():
+    """Return information about the WAL segments"""
+    segments = wal.get_segment_files()
+    active_segment = wal.get_active_segment()
+
+    segment_info = []
+    for segment in segments:
+        try:
+            size = os.path.getsize(segment)
+            segment_info.append({"path": segment, "size": size, "is_active": segment == active_segment})
+        except FileNotFoundError:
+            pass
+
+    return {"segments": segment_info, "total_segments": len(segment_info), "max_segment_size": MAX_SEGMENT_SIZE}
+
+
+@app.get("/keys")
+def get_all_keys():
+    """Return all keys in the storage"""
+    keys = storage.get_all_keys()
+    return {"keys": keys, "count": len(keys)}
