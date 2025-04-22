@@ -1,8 +1,11 @@
 # Distributed Key-Value Store written in Python
 
 This repository contains a simple distributed key-value store written in Python.
+
 It is designed to be a learning project for understanding distributed systems, replication, and persistence.
+
 Each version tag represents a different stage of development, with increasing complexity and features.
+
 See [Development Stages](#development-stages) for more details.
 
 > Disclaimer: This project is not intended for production use. It is a learning exercise and should not be used in any critical applications.
@@ -119,16 +122,21 @@ curl  "http://localhost:8002/key/key6"
 {"id": 15, "operation": "DELETE", "key": "key6", "value": null}
 ```
 
-Missing critical parts, such as:
 
-- Leader Election: Implement a consensus algorithm like Raft to elect a leader automatically.
-- Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
-- Fault Tolerance: Implement heartbeats, retries, and failure detection.
-- Persistent Connection: Replace the HTTP-based replication with more efficient TCP connections.
-- Sharding: Implement data partitioning to scale horizontally.
-- Compression: Add support for compressing the WAL files to save disk space.
-- Security: Add authentication and encryption for API calls and replication.
+## TODO
 
+- [ ] Checksums: Add checksums to the WAL entries to ensure data integrity.
+- [ ] Compression: Add support for compressing the WAL files to save disk space.
+- [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
+- [ ] Fault Tolerance: 
+  - [ ] Implement heartbeats 
+  - [ ] Retries
+  - [ ] Failure detection.
+  - [ ] Consensus algorithms like Raft or Paxos.
+- [ ] Persistent Connection: Replace the HTTP-based replication with more efficient TCP connections.
+- [ ] Transaction Support: Implement support for transactions to ensure atomicity and consistency.
+- [ ] Sharding: Implement data partitioning to scale horizontally.
+- [ ] Security: Add authentication and encryption for API calls and replication.
 
 ## Current limitations & future improvements
 
