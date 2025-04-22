@@ -1,5 +1,6 @@
 import json
 import os
+import zlib
 from enum import Enum
 from typing import Any, Optional, Set
 
@@ -16,6 +17,22 @@ class LogEntry(BaseModel):
     operation: OperationType
     key: str
     value: Optional[Any] = None
+    crc: Optional[int] = None
+
+    def calculate_crc(self) -> int:
+        """Calculate CRC for this entry based on its content except the CRC itself."""
+        # Create a copy of the entry without the CRC field
+        data_for_crc = self.model_dump()
+        data_for_crc.pop("crc", None)
+        # Convert to a stable string representation and calculate CRC32
+        json_str = json.dumps(data_for_crc, sort_keys=True)
+        return zlib.crc32(json_str.encode())
+
+    def validate_crc(self) -> bool:
+        """Validate that the stored CRC matches the calculated one."""
+        if self.crc is None:
+            return False
+        return self.crc == self.calculate_crc()
 
 
 class KeyValue(BaseModel):
@@ -69,6 +86,13 @@ class WAL:
         try:
             entry = json.loads(line)
             entry_id = entry["id"]
+            # Skip invalid entries (with incorrect CRC)
+            if "crc" in entry:
+                log_entry = LogEntry(**entry)
+                if not log_entry.validate_crc():
+                    print(f"Warning: Entry with ID {entry_id} has invalid CRC, skipping")
+                    return
+
             self.existing_ids.add(entry_id)
             if entry_id > self.current_id:
                 self.current_id = entry_id
@@ -78,6 +102,8 @@ class WAL:
     def append(self, operation: OperationType, key: str, value: Optional[Any] = None) -> LogEntry:
         self.current_id += 1
         entry = LogEntry(id=self.current_id, operation=operation, key=key, value=value)
+        # Calculate and set CRC
+        entry.crc = entry.calculate_crc()
         return self.append_entry(entry)
 
     def append_entry(self, entry: LogEntry) -> LogEntry:
@@ -89,6 +115,13 @@ class WAL:
         # Update current_id if needed
         if entry.id > self.current_id:
             self.current_id = entry.id
+
+        # Ensure entry has valid CRC
+        if entry.crc is None:
+            entry.crc = entry.calculate_crc()
+        elif not entry.validate_crc():
+            # Recalculate CRC if invalid
+            entry.crc = entry.calculate_crc()
 
         with open(self.log_file_path, "a") as f:
             f.write(json.dumps(entry.model_dump()) + "\n")
@@ -105,11 +138,21 @@ class WAL:
         try:
             with open(self.log_file_path, "r") as f:
                 for line in f:
-                    entry_dict = json.loads(line)
-                    entry = LogEntry(**entry_dict)
-                    if entry.id >= start_id:
-                        entries.append(entry)
-        except (json.JSONDecodeError, FileNotFoundError):
+                    try:
+                        entry_dict = json.loads(line)
+                        entry = LogEntry(**entry_dict)
+
+                        # Skip entries with invalid CRC
+                        if not entry.validate_crc():
+                            print(f"Warning: Skipping entry with ID {entry.id} due to CRC validation failure")
+                            continue
+
+                        if entry.id >= start_id:
+                            entries.append(entry)
+                    except (json.JSONDecodeError, ValueError) as e:
+                        print(f"Error parsing log entry: {str(e)}")
+                        continue
+        except FileNotFoundError:
             pass
 
         return entries
