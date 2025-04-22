@@ -232,12 +232,15 @@ class WAL:
         with open(segment, "r") as f:
             for line in f:
                 try:
-                    entry = self._parse_log_entry(line)
-                    if entry is not None and self._should_include_entry(entry, start_id):
-                        entries.append(entry)
+                    self._append_single_entry(entries, line, start_id)
                 except (json.JSONDecodeError, ValueError) as e:
                     print(f"Error parsing log entry: {str(e)}")
                     continue
+
+    def _append_single_entry(self, entries, line, start_id):
+        entry = self._parse_log_entry(line)
+        if entry and self._should_include_entry(entry, start_id):
+            entries.append(entry)
 
     def _parse_log_entry(self, line: str) -> Optional[LogEntry]:
         """Parse a log entry from a line in the log file."""
