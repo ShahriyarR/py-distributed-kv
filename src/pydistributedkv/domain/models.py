@@ -86,18 +86,30 @@ class WAL:
         try:
             entry = json.loads(line)
             entry_id = entry["id"]
-            # Skip invalid entries (with incorrect CRC)
-            if "crc" in entry:
-                log_entry = LogEntry(**entry)
-                if not log_entry.validate_crc():
-                    print(f"Warning: Entry with ID {entry_id} has invalid CRC, skipping")
-                    return
 
-            self.existing_ids.add(entry_id)
-            if entry_id > self.current_id:
-                self.current_id = entry_id
+            if not self._is_valid_entry(entry, entry_id):
+                return
+
+            self._update_tracking_data(entry_id)
         except (json.JSONDecodeError, KeyError):
             pass
+
+    def _is_valid_entry(self, entry, entry_id):
+        """Check if an entry has valid CRC."""
+        if "crc" not in entry:
+            return True
+
+        log_entry = LogEntry(**entry)
+        if not log_entry.validate_crc():
+            print(f"Warning: Entry with ID {entry_id} has invalid CRC, skipping")
+            return False
+        return True
+
+    def _update_tracking_data(self, entry_id):
+        """Update tracking data for a valid entry."""
+        self.existing_ids.add(entry_id)
+        if entry_id > self.current_id:
+            self.current_id = entry_id
 
     def append(self, operation: OperationType, key: str, value: Optional[Any] = None) -> LogEntry:
         self.current_id += 1
@@ -134,28 +146,39 @@ class WAL:
         return entry_id in self.existing_ids
 
     def read_from(self, start_id: int = 0) -> list[LogEntry]:
+        """Read log entries with ID >= start_id."""
         entries = []
+
         try:
             with open(self.log_file_path, "r") as f:
                 for line in f:
-                    try:
-                        entry_dict = json.loads(line)
-                        entry = LogEntry(**entry_dict)
-
-                        # Skip entries with invalid CRC
-                        if not entry.validate_crc():
-                            print(f"Warning: Skipping entry with ID {entry.id} due to CRC validation failure")
-                            continue
-
-                        if entry.id >= start_id:
-                            entries.append(entry)
-                    except (json.JSONDecodeError, ValueError) as e:
-                        print(f"Error parsing log entry: {str(e)}")
-                        continue
+                    entry = self._parse_log_entry(line)
+                    if entry and self._should_include_entry(entry, start_id):
+                        entries.append(entry)
         except FileNotFoundError:
             pass
 
         return entries
+
+    def _parse_log_entry(self, line: str) -> Optional[LogEntry]:
+        """Parse a log entry from a line in the log file."""
+        try:
+            entry_dict = json.loads(line)
+            entry = LogEntry(**entry_dict)
+
+            # Skip entries with invalid CRC
+            if not entry.validate_crc():
+                print(f"Warning: Skipping entry with ID {entry.id} due to CRC validation failure")
+                return None
+
+            return entry
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Error parsing log entry: {str(e)}")
+            return None
+
+    def _should_include_entry(self, entry: LogEntry, start_id: int) -> bool:
+        """Check if an entry should be included based on its ID."""
+        return entry.id >= start_id
 
     def get_last_id(self) -> int:
         return self.current_id
