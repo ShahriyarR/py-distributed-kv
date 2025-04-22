@@ -62,19 +62,32 @@ async def fetch_entries_from_leader() -> list[LogEntry]:
     """Fetch new log entries from the leader."""
     response = requests.get(f"{leader_url}/log_entries/{last_applied_id}", timeout=API_TIMEOUT)
     data = response.json()
-    entries = []
+    return _parse_and_validate_entries(data.get("entries", []), source="leader")
 
-    for entry_data in data.get("entries", []):
-        try:
-            entry = LogEntry(**entry_data)
-            if entry.validate_crc():
-                entries.append(entry)
-            else:
-                print(f"Warning: Received entry with ID {entry.id} with invalid CRC from leader")
-        except ValueError as e:
-            print(f"Error parsing entry from leader: {str(e)}")
 
-    return entries
+def _parse_and_validate_entries(entry_data_list: list[dict], source: str = "") -> list[LogEntry]:
+    """Parse and validate log entries from the provided data."""
+    valid_entries = []
+
+    for entry_data in entry_data_list:
+        entry = _create_valid_entry(entry_data, source)
+        if entry:
+            valid_entries.append(entry)
+
+    return valid_entries
+
+
+def _create_valid_entry(entry_data: dict, source: str = "") -> LogEntry | None:
+    """Create and validate a single log entry."""
+    try:
+        entry = LogEntry(**entry_data)
+        if not entry.validate_crc():
+            print(f"Warning: Received entry with ID {entry.id} with invalid CRC from {source}")
+            return None
+        return entry
+    except ValueError as e:
+        print(f"Error parsing entry from {source}: {str(e)}")
+        return None
 
 
 def append_entries_to_wal(entries: list[LogEntry]) -> list[LogEntry]:
@@ -96,22 +109,14 @@ def apply_entries_to_storage(entries: list[LogEntry]) -> int:
 @app.post("/replicate")
 async def replicate(req: ReplicationRequest):
     global last_applied_id
-    entries = []
 
-    # Create and validate entries
-    for entry_data in req.entries:
-        try:
-            entry = LogEntry(**entry_data)
-            if entry.validate_crc():
-                entries.append(entry)
-            else:
-                print(f"Warning: Received entry with ID {entry.id} with invalid CRC")
-        except ValueError as e:
-            print(f"Error parsing entry: {str(e)}")
+    # Use the existing helper to parse and validate entries
+    entries = _parse_and_validate_entries(req.entries, source="replication request")
 
+    # Process and apply new entries
     new_entries = _process_new_entries(entries)
 
-    # Apply only new entries to the in-memory state
+    # Update the last applied ID if we have new entries
     if new_entries:
         last_id = storage.apply_entries(new_entries)
         last_applied_id = max(last_applied_id, last_id)
