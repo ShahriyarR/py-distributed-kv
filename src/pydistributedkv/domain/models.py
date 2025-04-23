@@ -11,6 +11,7 @@ from pydantic import BaseModel
 class OperationType(str, Enum):
     SET = "SET"
     DELETE = "DELETE"
+    GET = "GET"
 
 
 class LogEntry(BaseModel):
@@ -43,6 +44,16 @@ class KeyValue(BaseModel):
 class ReplicationStatus(BaseModel):
     follower_id: str
     last_replicated_id: int
+
+
+class ClientRequest(BaseModel):
+    """Request from a client with unique identifiers to enable idempotent processing"""
+
+    client_id: str
+    request_id: str
+    operation: Optional[OperationType] = None
+    key: Optional[str] = None
+    value: Optional[Any] = None
 
 
 class ReplicationRequest(BaseModel):

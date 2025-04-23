@@ -1,17 +1,27 @@
+import logging
 import os
+from typing import Optional
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from pydistributedkv.configurator.settings.base import API_TIMEOUT, MAX_SEGMENT_SIZE
-from pydistributedkv.domain.models import LogEntry, ReplicationRequest, WAL
+from pydistributedkv.domain.models import ClientRequest, LogEntry, ReplicationRequest, WAL
+from pydistributedkv.service.request_deduplication import RequestDeduplicationService
 from pydistributedkv.service.storage import KeyValueStorage
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 # Initialize WAL and storage
 wal = WAL(os.getenv("WAL_PATH", "data/follower/wal.log"), max_segment_size=MAX_SEGMENT_SIZE)
 storage = KeyValueStorage(wal)
+
+# Request deduplication service
+request_deduplication = RequestDeduplicationService(service_name="follower")
 
 # Leader connection info
 leader_url = os.getenv("LEADER_URL", "http://localhost:8000")
@@ -138,12 +148,45 @@ def _process_new_entries(entries: list[LogEntry]) -> list[LogEntry]:
 
 
 @app.get("/key/{key}")
-def get_key(key: str):
-    # Followers can serve read requests directly
+def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
+    # Check for duplicate request
+    if client_id and request_id:
+        logger.info(f"GET request for key={key} from client={client_id}, request={request_id}")
+        previous_response = request_deduplication.get_processed_result(client_id, request_id)
+        if previous_response is not None:
+            logger.info(f"✅ Returning cached response for GET key={key}, client={client_id}, request={request_id}")
+            return previous_response
+    else:
+        logger.info(f"GET request for key={key} (no client ID)")
+
+    # Process the request
     value = storage.get(key)
+
     if value is None:
-        raise HTTPException(status_code=404, detail="Key not found")
-    return {"key": key, "value": value}
+        error_msg = f"Key not found: {key}"
+        logger.warning(error_msg)
+
+        response = {"status": "error", "message": error_msg}
+        status_code = 404
+
+        # Cache the error response too if client tracking is enabled
+        if client_id and request_id:
+            client_request = ClientRequest(client_id=client_id, request_id=request_id, operation="GET", key=key)
+            request_deduplication.mark_request_processed(client_request, response)
+            logger.info(f"Cached error response for GET key={key}, client={client_id}, request={request_id}")
+
+        raise HTTPException(status_code=status_code, detail=error_msg)
+
+    # Create response
+    response = {"key": key, "value": value}
+
+    # If client tracking info was provided, store the response
+    if client_id and request_id:
+        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation="GET", key=key)
+        request_deduplication.mark_request_processed(client_request, response)
+        logger.info(f"Cached response for GET key={key}, client={client_id}, request={request_id}")
+
+    return response
 
 
 @app.get("/status")
@@ -173,3 +216,24 @@ def get_all_keys():
     """Return all keys in the storage"""
     keys = storage.get_all_keys()
     return {"keys": keys, "count": len(keys)}
+
+
+@app.get("/request_status")
+def get_request_status(client_id: str, request_id: str):
+    """Check if a client request has been processed"""
+    logger.info(f"Checking status for client={client_id}, request={request_id}")
+    result = request_deduplication.get_processed_result(client_id, request_id)
+    if result:
+        logger.info(f"Found cached result for client={client_id}, request={request_id}")
+        return {"processed": True, "result": result}
+    else:
+        logger.info(f"No cached result found for client={client_id}, request={request_id}")
+        return {"processed": False}
+
+
+@app.get("/deduplication_stats")
+def get_deduplication_stats():
+    """Return statistics about the request deduplication service"""
+    stats = request_deduplication.get_stats()
+    logger.info(f"Returning deduplication stats: duplicates detected={stats['total_duplicates_detected']}")
+    return stats
