@@ -36,15 +36,18 @@ def test_log_entry_crc_calculation():
 def test_wal_skips_invalid_crc():
     temp_dir = tempfile.mkdtemp()
     try:
-        log_path = os.path.join(temp_dir, "test_invalid_crc.log")
+        log_path = os.path.join(temp_dir, "wal.log")
 
         # Create a WAL and add some entries
         wal = WAL(log_path)
         entry1 = wal.append(OperationType.SET, "key1", "value1")
         entry2 = wal.append(OperationType.SET, "key2", "value2")
 
+        # Get the actual segment file path that WAL is using
+        active_segment = wal.get_active_segment()
+
         # Manually corrupt the second entry in the log file
-        with open(log_path, "r") as f:
+        with open(active_segment, "r") as f:
             lines = f.readlines()
 
         # Parse the second entry, modify its value but keep the old CRC
@@ -52,7 +55,7 @@ def test_wal_skips_invalid_crc():
         corrupted_entry["value"] = "corrupted_value"
 
         # Write back the corrupted log
-        with open(log_path, "w") as f:
+        with open(active_segment, "w") as f:
             f.write(lines[0])  # Write the first entry unchanged
             f.write(json.dumps(corrupted_entry) + "\n")
 
@@ -76,12 +79,19 @@ def test_wal_skips_invalid_crc():
 def test_wal_handles_missing_crc():
     temp_dir = tempfile.mkdtemp()
     try:
-        log_path = os.path.join(temp_dir, "test_missing_crc.log")
+        log_path = os.path.join(temp_dir, "wal.log")
+
+        # Create a WAL to initialize the segment structure
+        wal = WAL(log_path)
+        active_segment = wal.get_active_segment()
+
+        # Clear the segment file to start fresh
+        open(active_segment, "w").close()
 
         # Manually create a log file with an entry missing CRC
         entry_without_crc = {"id": 1, "operation": "SET", "key": "test_key", "value": "test_value"}
 
-        with open(log_path, "w") as f:
+        with open(active_segment, "w") as f:
             f.write(json.dumps(entry_without_crc) + "\n")
 
         # Load the WAL and verify it skips the entry without CRC
@@ -98,7 +108,7 @@ def test_wal_handles_missing_crc():
 def test_append_entry_recalculates_invalid_crc():
     temp_dir = tempfile.mkdtemp()
     try:
-        log_path = os.path.join(temp_dir, "test_recalc_crc.log")
+        log_path = os.path.join(temp_dir, "wal.log")
         wal = WAL(log_path)
 
         # Create an entry with an invalid CRC
@@ -158,20 +168,27 @@ def test_corrupted_json_handling():
         wal.append(OperationType.SET, "key1", "value1")
         wal.append(OperationType.SET, "key2", "value2")
 
+        # Get the active segment
+        active_segment = wal.get_active_segment()
+
         # Append some corrupted JSON to the log file
-        with open(log_path, "a") as f:
+        with open(active_segment, "a") as f:
             f.write("{this is not valid JSON}\n")
-            f.write('{"id": 3, "operation": "SET", "key": "key3", "value": "value3"}\n')
+
+            # Add a valid entry after the corrupted one - the WAL should process this correctly
+            valid_entry = LogEntry(id=3, operation=OperationType.SET, key="key3", value="value3")
+            valid_entry.crc = valid_entry.calculate_crc()
+            f.write(json.dumps(valid_entry.model_dump()) + "\n")
 
         # Load the WAL again
         wal2 = WAL(log_path)
 
-        # It should have loaded the valid entries and skipped the corrupted one
-        assert wal2.get_last_id() == 3
-        # The entry after the corrupted one should be ignored as well
-        # because corrupted entries could have caused inconsistent state
-        entries = wal2.read_from(0)
-        assert len(entries) == 2
+        # It should have loaded all valid entries (including entry 3) and skipped the corrupted one
+        valid_entries = wal2.read_from(0)
+        assert len(valid_entries) == 3
+        assert valid_entries[0].id == 1
+        assert valid_entries[1].id == 2
+        assert valid_entries[2].id == 3
 
     finally:
         shutil.rmtree(temp_dir)
