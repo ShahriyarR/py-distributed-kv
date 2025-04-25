@@ -53,6 +53,7 @@ max-line-length = 140
 select = ["C", "E", "F", "W", "B", "B9"]
 ignore = ["E203", "E501", "W503", "C812", "E731", "F811"]
 exclude = ["__init__.py"]
+extend-immutable-calls = ["Query", "fastapi.Query"]
 
 [tool.black]
 line-length = 140
