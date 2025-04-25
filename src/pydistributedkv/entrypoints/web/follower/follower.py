@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
@@ -149,45 +149,69 @@ def _process_new_entries(entries: list[LogEntry]) -> list[LogEntry]:
 
 @app.get("/key/{key}")
 def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
-    # Check for duplicate request
-    if client_id and request_id:
-        logger.info(f"GET request for key={key} from client={client_id}, request={request_id}")
-        # Pass operation type to get_processed_result
-        previous_response = request_deduplication.get_processed_result(client_id, request_id, OperationType.GET)
-        if previous_response is not None:
-            logger.info(f"✅ Returning cached response for GET key={key}, client={client_id}, request={request_id}")
-            return previous_response
-    else:
-        logger.info(f"GET request for key={key} (no client ID)")
+    """Handle GET request for a specific key with deduplication support"""
+    # Check for cached response from duplicate request
+    cached_response = _check_request_cache(client_id, request_id, key, OperationType.GET)
+    if cached_response:
+        return cached_response
 
-    # Process the request
+    # Get the value and prepare response
+    value, status_code, message = _get_value_from_storage(key)
+
+    # Handle error case
+    if status_code != 200:
+        _cache_response_if_needed(client_id, request_id, key, OperationType.GET, {"status": "error", "message": message})
+        raise HTTPException(status_code=status_code, detail=message)
+
+    # Create success response
+    response = {"key": key, "value": value}
+
+    # Cache the response if client tracking is enabled
+    _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
+
+    return response
+
+
+def _check_request_cache(client_id: Optional[str], request_id: Optional[str], key: str, operation: OperationType) -> Optional[Dict]:
+    """Check if this is a duplicate request with a cached response"""
+    if not client_id or not request_id:
+        logger.info(f"GET request for key={key} (no client ID)")
+        return None
+
+    logger.info(f"GET request for key={key} from client={client_id}, request={request_id}")
+    previous_response = request_deduplication.get_processed_result(client_id, request_id, operation)
+
+    if previous_response is not None:
+        logger.info(f"✅ Returning cached response for GET key={key}, client={client_id}, request={request_id}")
+        return previous_response
+
+    return None
+
+
+def _get_value_from_storage(key: str) -> Tuple[Any, int, str]:
+    """Get a value from storage, returning value, status code and message"""
     value = storage.get(key)
 
     if value is None:
         error_msg = f"Key not found: {key}"
         logger.warning(error_msg)
+        return None, 404, error_msg
 
-        response = {"status": "error", "message": error_msg}
-        status_code = 404
+    return value, 200, "OK"
 
-        # Cache the error response too if client tracking is enabled
-        if client_id and request_id:
-            client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.GET, key=key)
-            request_deduplication.mark_request_processed(client_request, response)
-            logger.info(f"Cached error response for GET key={key}, client={client_id}, request={request_id}")
 
-        raise HTTPException(status_code=status_code, detail=error_msg)
+def _cache_response_if_needed(
+    client_id: Optional[str], request_id: Optional[str], key: str, operation: OperationType, response: Dict
+) -> None:
+    """Cache the response if client tracking is enabled"""
+    if not client_id or not request_id:
+        return
 
-    # Create response
-    response = {"key": key, "value": value}
+    client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=operation, key=key)
+    request_deduplication.mark_request_processed(client_request, response)
 
-    # If client tracking info was provided, store the response
-    if client_id and request_id:
-        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.GET, key=key)
-        request_deduplication.mark_request_processed(client_request, response)
-        logger.info(f"Cached response for GET key={key}, client={client_id}, request={request_id}")
-
-    return response
+    status = "error" if "status" in response and response["status"] == "error" else "success"
+    logger.info(f"Cached {status} response for GET key={key}, client={client_id}, request={request_id}")
 
 
 @app.get("/status")

@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
@@ -30,119 +30,144 @@ replication_status: dict[str, int] = {}  # follower_id -> last_replicated_id
 
 @app.get("/key/{key}")
 def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
-    # Track request with client identifiers if provided
-    if client_id and request_id:
-        logger.info(f"GET request for key={key} from client={client_id}, request={request_id}")
-        # Pass operation type to get_processed_result
-        previous_response = request_deduplication.get_processed_result(client_id, request_id, OperationType.GET)
-        if previous_response is not None:
-            logger.info(f"✅ Returning cached response for GET key={key}, client={client_id}, request={request_id}")
-            return previous_response
-    else:
-        logger.info(f"GET request for key={key} (no client ID)")
+    """Handle GET request for a specific key with deduplication support"""
+    # Check for cached response if client tracking is enabled
+    cached_response = _check_request_cache(client_id, request_id, key, OperationType.GET)
+    if cached_response:
+        return cached_response
 
-    value = storage.get(key)
-    if value is None:
-        error_msg = f"Key not found: {key}"
-        logger.warning(error_msg)
+    # Get value from storage and handle errors
+    value, status_code, message = _get_value_from_storage(key)
 
-        response = {"status": "error", "message": error_msg}
+    # Handle error case
+    if status_code != 200:
+        response = {"status": "error", "message": message}
+        _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
+        raise HTTPException(status_code=status_code, detail=message)
 
-        # Cache error responses too
-        if client_id and request_id:
-            client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.GET, key=key)
-            request_deduplication.mark_request_processed(client_request, response)
-
-        raise HTTPException(status_code=404, detail=error_msg)
-
-    # Create response
+    # Create success response
     response = {"key": key, "value": value}
 
-    # Store response if client identifiers provided
-    if client_id and request_id:
-        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.GET, key=key)
-        request_deduplication.mark_request_processed(client_request, response)
+    # Cache the response if client tracking is enabled
+    _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
 
     return response
 
 
+def _check_request_cache(client_id: Optional[str], request_id: Optional[str], key: str, operation: OperationType) -> Optional[Dict]:
+    """Check if this is a duplicate request with a cached response"""
+    if not client_id or not request_id:
+        logger.info(f"GET request for key={key} (no client ID)")
+        return None
+
+    logger.info(f"GET request for key={key} from client={client_id}, request={request_id}")
+    previous_response = request_deduplication.get_processed_result(client_id, request_id, operation)
+
+    if previous_response is not None:
+        logger.info(f"✅ Returning cached response for GET key={key}, client={client_id}, request={request_id}")
+        return previous_response
+
+    return None
+
+
+def _get_value_from_storage(key: str) -> Tuple[Any, int, str]:
+    """Get a value from storage and return appropriate status information"""
+    value = storage.get(key)
+
+    if value is None:
+        error_msg = f"Key not found: {key}"
+        logger.warning(error_msg)
+        return None, 404, error_msg
+
+    return value, 200, "Success"
+
+
+def _cache_response_if_needed(
+    client_id: Optional[str], request_id: Optional[str], key: str, operation: OperationType, response: Dict, value: Any = None
+) -> None:
+    """Cache the response if client tracking is enabled"""
+    if not client_id or not request_id:
+        return
+
+    client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=operation, key=key, value=value)
+    request_deduplication.mark_request_processed(client_request, response)
+
+    status_type = "error" if "status" in response and response["status"] == "error" else "success"
+    logger.info(f"Cached {status_type} response for {operation.name} key={key}, client={client_id}, request={request_id}")
+
+
 @app.put("/key/{key}")
 def set_key(key: str, kv: KeyValue, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
-    # If client_id and request_id are provided, check for duplicate request
-    if client_id and request_id:
-        logger.info(f"SET request for key={key} from client={client_id}, request={request_id}")
-        # Pass operation type to get_processed_result
-        previous_response = request_deduplication.get_processed_result(client_id, request_id, OperationType.SET)
-        if previous_response is not None:
-            logger.info(f"✅ Returning cached response for SET key={key}, client={client_id}, request={request_id}")
-            return previous_response
-    else:
-        logger.info(f"SET request for key={key} (no client ID)")
+    """Handle PUT request to set a specific key with deduplication support"""
+    # Check for cached response if client tracking is enabled
+    cached_response = _check_request_cache(client_id, request_id, key, OperationType.SET)
+    if cached_response:
+        return cached_response
 
-    # Process the request normally
-    entry = storage.set(key, kv.value)
+    # Process the request and get the resulting entry
+    entry = _process_set_key_request(key, kv.value)
+
+    # Create and cache the response
+    response = {"status": "ok", "id": entry.id}
+    _cache_response_if_needed(client_id, request_id, key, OperationType.SET, response, kv.value)
+
+    return response
+
+
+def _process_set_key_request(key: str, value: Any):
+    """Process the key-value storage operation and handle replication"""
+    # Store the value
+    entry = storage.set(key, value)
     logger.info(f"Added SET entry id={entry.id} for key={key}")
 
     # Replicate to followers asynchronously
     _replicate_to_followers(entry)
 
-    # Create response
-    response = {"status": "ok", "id": entry.id}
-
-    # If client tracking info was provided, store the response
-    if client_id and request_id:
-        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.SET, key=key, value=kv.value)
-        request_deduplication.mark_request_processed(client_request, response)
-        logger.info(f"Cached response for SET key={key}, client={client_id}, request={request_id}")
-
-    return response
+    return entry
 
 
 @app.delete("/key/{key}")
 def delete_key(key: str, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
-    # Check for duplicate request
-    if client_id and request_id:
-        logger.info(f"DELETE request for key={key} from client={client_id}, request={request_id}")
-        # Pass operation type to get_processed_result
-        previous_response = request_deduplication.get_processed_result(client_id, request_id, OperationType.DELETE)
-        if previous_response is not None:
-            logger.info(f"✅ Returning cached response for DELETE key={key}, client={client_id}, request={request_id}")
-            return previous_response
-    else:
-        logger.info(f"DELETE request for key={key} (no client ID)")
+    """Handle DELETE request for a specific key with deduplication support"""
+    # Check for cached response if client tracking is enabled
+    cached_response = _check_request_cache(client_id, request_id, key, OperationType.DELETE)
+    if cached_response:
+        return cached_response
 
-    # Process the request
+    # Process the delete request
+    entry, status_code, error_msg = _process_delete_request(key)
+
+    # Handle error case
+    if status_code != 200:
+        response = {"status": "error", "message": error_msg}
+        _cache_response_if_needed(client_id, request_id, key, OperationType.DELETE, response)
+        raise HTTPException(status_code=status_code, detail=error_msg)
+
+    # Create success response
+    response = {"status": "ok", "id": entry.id}
+
+    # Cache the response if client tracking is enabled
+    _cache_response_if_needed(client_id, request_id, key, OperationType.DELETE, response)
+
+    return response
+
+
+def _process_delete_request(key: str) -> Tuple[Any, int, Optional[str]]:
+    """Process the key deletion operation and handle replication"""
+    # Delete the key from storage
     entry = storage.delete(key)
+
     if entry is None:
         error_msg = f"Key not found: {key}"
         logger.warning(error_msg)
-
-        response = {"status": "error", "message": error_msg}
-        status_code = 404
-
-        # Cache the error response too if client tracking is enabled
-        if client_id and request_id:
-            client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.DELETE, key=key)
-            request_deduplication.mark_request_processed(client_request, response)
-            logger.info(f"Cached error response for DELETE key={key}, client={client_id}, request={request_id}")
-
-        raise HTTPException(status_code=status_code, detail=error_msg)
+        return None, 404, error_msg
 
     logger.info(f"Added DELETE entry id={entry.id} for key={key}")
 
-    # Replicate to followers
+    # Replicate to followers asynchronously
     _replicate_to_followers(entry)
 
-    # Create response
-    response = {"status": "ok", "id": entry.id}
-
-    # If client tracking info was provided, store the response
-    if client_id and request_id:
-        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.DELETE, key=key)
-        request_deduplication.mark_request_processed(client_request, response)
-        logger.info(f"Cached response for DELETE key={key}, client={client_id}, request={request_id}")
-
-    return response
+    return entry, 200, None
 
 
 def _replicate_to_followers(entry):
