@@ -208,11 +208,70 @@ curl http://localhost:8000/segments
 }
 ```
 
+### v1.3.0
+
+> **Added feature:** Idempotent Receiver pattern for reliable client request handling.
+
+This version implements the Idempotent Receiver pattern to handle duplicate client requests and ensure operations are only applied once:
+
+* **Client Request Identification:** Each client request can now include a unique client ID and request ID.
+* **Operation-Aware Deduplication:** The system tracks client requests by operation type (GET/SET/DELETE) to properly handle different operations with the same request ID.
+* **Request Caching:** Responses are cached for a configurable period to immediately respond to duplicate requests.
+* **Request Statistics:** New endpoints provide visibility into duplicate detection and request handling patterns.
+* **Improved Reliability:** Clients can retry requests without worry of duplicate processing.
+
+Benefits of the Idempotent Receiver pattern:
+* Eliminates duplicate mutations when clients retry requests due to network issues
+* Prevents accidental duplicate operations from users clicking twice
+* Provides exactly-once semantics in an eventually consistent system
+* Improves system robustness during network partitions or client timeouts
+
+How it works:
+1. Clients add `client_id` and `request_id` parameters to their requests
+2. When the system first processes a request, it stores the result along with these identifiers
+3. If the same request arrives again (same client_id, request_id, and operation), the cached result is returned
+4. Different operations with the same request ID are tracked separately
+5. Cached results expire after a configurable time period (default: 1 hour)
+
+Example usage:
+
+```bash
+# First time - request is processed normally
+curl -X PUT "http://localhost:8000/key/testkey?client_id=client1&request_id=req123" \
+    -H "Content-Type: application/json" -d '{"value": "testvalue"}'
+
+# Same request again - returns cached result without processing
+curl -X PUT "http://localhost:8000/key/testkey?client_id=client1&request_id=req123" \
+    -H "Content-Type: application/json" -d '{"value": "testvalue"}'
+
+# Different operation type with same request ID - processed separately
+curl -X DELETE "http://localhost:8000/key/testkey?client_id=client1&request_id=req123"
+
+# Check deduplication statistics
+curl http://localhost:8000/deduplication_stats
+```
+
+View request deduplication statistics:
+
+```json
+{
+  "service_name": "leader",
+  "current_cache_size": 2,
+  "unique_request_ids": 1,
+  "total_client_count": 1,
+  "total_requests_cached": 2,
+  "total_duplicates_detected": 1,
+  "same_operation_duplicates": 1,
+  "different_operation_duplicates": 1,
+  "total_cache_cleanups": 0
+}
+```
 
 ## TODO
 
 - [x] Checksums: Add checksums to the WAL entries to ensure data integrity.
 - [x] Segmented Log: Split WAL into multiple segment files that roll over after configured size limit.
+- [x] Idempotent Receiver Pattern: Implement unique request IDs to handle duplicate client requests properly.
 - [ ] Compression: Add support for compressing the WAL files to save disk space.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
 - [ ] Fault Tolerance: 
@@ -230,4 +289,3 @@ curl http://localhost:8000/segments
 Each iteration will state the missing parts and the future improvements.
 
 #### Authors:  [Shahriyar Rzayev](https://www.linkedin.com/in/shahriyar-rzayev/)
-
