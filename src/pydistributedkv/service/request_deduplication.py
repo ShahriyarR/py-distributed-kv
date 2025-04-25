@@ -168,7 +168,7 @@ class RequestDeduplicationService:
         total_cached = 0
         unique_request_ids = set()
 
-        for client_id, requests in self.processed_requests.items():
+        for _, requests in self.processed_requests.items():
             total_cached += len(requests)
             for req_id, _ in requests.keys():
                 unique_request_ids.add(req_id)
