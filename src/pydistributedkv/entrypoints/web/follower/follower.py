@@ -6,7 +6,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Query
 
 from pydistributedkv.configurator.settings.base import API_TIMEOUT, MAX_SEGMENT_SIZE
-from pydistributedkv.domain.models import ClientRequest, LogEntry, ReplicationRequest, WAL
+from pydistributedkv.domain.models import ClientRequest, LogEntry, OperationType, ReplicationRequest, WAL
 from pydistributedkv.service.request_deduplication import RequestDeduplicationService
 from pydistributedkv.service.storage import KeyValueStorage
 
@@ -152,7 +152,8 @@ def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Option
     # Check for duplicate request
     if client_id and request_id:
         logger.info(f"GET request for key={key} from client={client_id}, request={request_id}")
-        previous_response = request_deduplication.get_processed_result(client_id, request_id)
+        # Pass operation type to get_processed_result
+        previous_response = request_deduplication.get_processed_result(client_id, request_id, OperationType.GET)
         if previous_response is not None:
             logger.info(f"✅ Returning cached response for GET key={key}, client={client_id}, request={request_id}")
             return previous_response
@@ -171,7 +172,7 @@ def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Option
 
         # Cache the error response too if client tracking is enabled
         if client_id and request_id:
-            client_request = ClientRequest(client_id=client_id, request_id=request_id, operation="GET", key=key)
+            client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.GET, key=key)
             request_deduplication.mark_request_processed(client_request, response)
             logger.info(f"Cached error response for GET key={key}, client={client_id}, request={request_id}")
 
@@ -182,7 +183,7 @@ def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Option
 
     # If client tracking info was provided, store the response
     if client_id and request_id:
-        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation="GET", key=key)
+        client_request = ClientRequest(client_id=client_id, request_id=request_id, operation=OperationType.GET, key=key)
         request_deduplication.mark_request_processed(client_request, response)
         logger.info(f"Cached response for GET key={key}, client={client_id}, request={request_id}")
 
@@ -219,15 +220,16 @@ def get_all_keys():
 
 
 @app.get("/request_status")
-def get_request_status(client_id: str, request_id: str):
+def get_request_status(client_id: str, request_id: str, operation: Optional[str] = Query(None)):
     """Check if a client request has been processed"""
-    logger.info(f"Checking status for client={client_id}, request={request_id}")
-    result = request_deduplication.get_processed_result(client_id, request_id)
+    logger.info(f"Checking status for client={client_id}, request={request_id}, operation={operation}")
+    # Pass operation type to get_processed_result if provided
+    result = request_deduplication.get_processed_result(client_id, request_id, operation)
     if result:
-        logger.info(f"Found cached result for client={client_id}, request={request_id}")
+        logger.info(f"Found cached result for client={client_id}, request={request_id}, operation={operation}")
         return {"processed": True, "result": result}
     else:
-        logger.info(f"No cached result found for client={client_id}, request={request_id}")
+        logger.info(f"No cached result found for client={client_id}, request={request_id}, operation={operation}")
         return {"processed": False}
 
 
