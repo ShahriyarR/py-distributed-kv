@@ -2,7 +2,12 @@
 import os
 
 # Leader config
-LEADER_CONFIG = {"host": "0.0.0.0", "port": 8000, "wal_path": "data/leader/wal.log"}
+LEADER_CONFIG = {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "wal_path": "data/leader/wal.log",
+    "leader_url": "http://localhost:8000",
+}
 
 # Follower config
 FOLLOWER_CONFIGS = {
