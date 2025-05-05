@@ -348,6 +348,80 @@ To test failure detection:
 4. After the heartbeat timeout period, observe the stopped follower being marked as "down" in the cluster status
 5. Start the follower again and observe it automatically returning to "healthy" status
 
+### v1.5.0
+
+> **Added feature:** Versioned Value pattern to track value history and handle concurrent updates.
+
+This version implements the Versioned Value pattern to track the history of values and provide a robust mechanism for handling concurrent updates:
+
+* **Version Tracking:** Each value stored now includes a version number that increments with every update.
+* **Historical Values:** The system maintains a history of previous values, allowing clients to access historical data.
+* **Optimistic Concurrency Control:** Clients can provide version numbers with updates to prevent overwriting newer data.
+* **Conflict Detection:** When a client tries to update with an outdated version, the operation is rejected with a conflict error.
+* **Version Query API:** New endpoints for retrieving specific versions and inspecting version history.
+
+Benefits of the Versioned Value pattern:
+* **Audit Trail:** Track how values have changed over time
+* **Time Travel:** Access historical states of any key
+* **Conflict Prevention:** Detect and handle concurrent update conflicts gracefully
+* **Data Reliability:** Prevent older values from overwriting newer ones
+* **Debugging:** Diagnose issues by examining the history of changes
+
+How it works:
+1. Each key stores its current value, current version, and a history of previous values
+2. Every update increments the version number for that key
+3. Clients can request a specific version when reading values
+4. When updating, clients can specify a version as a precondition to prevent conflicts
+5. If a version conflict occurs, the server returns the current version so clients can update appropriately
+
+API Extensions:
+* Version parameter for GET operations: `GET /key/{key}?version=3`
+* Version parameter for PUT operations: `PUT /key/{key}` with body `{"value": "new-value", "version": 2}`
+* Version history endpoint: `GET /key/{key}/history`
+* Available versions endpoint: `GET /key/{key}/versions`
+
+Example usage:
+
+```bash
+# Set initial value for a key
+curl -X PUT "http://localhost:8000/key/config" \
+  -H "Content-Type: application/json" -d '{"value": "initial-setting"}'
+# Response: {"status":"ok","id":1,"key":"config","version":1}
+
+# Update the value
+curl -X PUT "http://localhost:8000/key/config" \
+  -H "Content-Type: application/json" -d '{"value": "updated-setting"}'
+# Response: {"status":"ok","id":2,"key":"config","version":2}
+
+# Get the latest value
+curl "http://localhost:8000/key/config"
+# Response: {"key":"config","value":"updated-setting","version":2}
+
+# Get a specific version
+curl "http://localhost:8000/key/config?version=1"
+# Response: {"key":"config","value":"initial-setting","version":1}
+
+# Try updating with an outdated version (conflict)
+curl -X PUT "http://localhost:8000/key/config" \
+  -H "Content-Type: application/json" -d '{"value": "conflict-value", "version": 1}'
+# Response: {"status":"error","message":"Version conflict: provided version 1 is outdated","current_version":2}
+
+# View version history
+curl "http://localhost:8000/key/config/history"
+# Response: {"key":"config","versions":[1,2],"history":[{"version":1,"value":"initial-setting"},{"version":2,"value":"updated-setting"}]}
+
+# View available versions
+curl "http://localhost:8000/key/config/versions"
+# Response: {"key":"config","versions":[1,2],"latest_version":2}
+```
+
+This feature helps maintain data consistency in distributed environments by:
+* Ensuring newer data isn't accidentally overwritten by stale updates
+* Providing a mechanism for clients to detect and resolve conflicts
+* Preserving the complete history of changes for auditing and recovery
+
+The Versioned Value pattern is particularly valuable in distributed systems where nodes may receive updates in different orders or experience network partitions.
+
 ## TODO
 
 - [x] Checksums: Add checksums to the WAL entries to ensure data integrity.
@@ -357,6 +431,7 @@ To test failure detection:
   - [x] Implement heartbeats for failure detection
   - [ ] Add automatic retries for transient failures
   - [ ] Implement leader election (Raft or similar consensus algorithm)
+- [x] Versioned Value: Track version history for each key and implement optimistic concurrency control.
 - [ ] Compression: Add support for compressing the WAL files to save disk space.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
 - [ ] Persistent Connection: Replace the HTTP-based replication with more efficient TCP connections.
@@ -369,3 +444,5 @@ To test failure detection:
 Each iteration will state the missing parts and the future improvements.
 
 #### Authors:  [Shahriyar Rzayev](https://www.linkedin.com/in/shahriyar-rzayev/)
+
+`
