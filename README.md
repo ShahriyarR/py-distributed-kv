@@ -267,18 +267,98 @@ View request deduplication statistics:
 }
 ```
 
+### v1.4.0
+
+> **Added feature:** Heartbeat mechanism for server health monitoring and failure detection.
+
+This version implements a robust heartbeat mechanism to detect server failures and maintain cluster health awareness:
+
+* **Periodic Heartbeats:** Servers exchange periodic heartbeat messages to indicate they're alive and functioning.
+* **Bidirectional Monitoring:** Both leader and followers monitor each other's health through heartbeats.
+* **Automatic Failure Detection:** Servers that miss heartbeats are automatically marked as "down" after a configurable timeout.
+* **Smart Replication:** The leader only attempts to replicate data to healthy followers, avoiding timeouts from down servers.
+* **Health Recovery:** When a server comes back online, heartbeats automatically restore its "healthy" status.
+* **Cluster Status API:** New endpoints provide visibility into the health status of all servers in the cluster.
+
+Benefits of the heartbeat mechanism:
+* Fast detection of server failures for improved reliability
+* Reduced timeout delays when interacting with unavailable servers
+* Better visibility into cluster health status
+* Automatic recovery detection when servers come back online
+* Foundation for more advanced fault tolerance features
+
+How it works:
+1. Each server sends periodic heartbeat messages to all other servers it knows about
+2. The heartbeat interval is configurable (default: 10 seconds)
+3. If a server doesn't receive a heartbeat from another server within the timeout period (default: 3x interval), it marks that server as "down"
+4. When a heartbeat is received from a previously down server, it's automatically marked as "healthy" again
+5. The leader only replicates data to followers marked as "healthy"
+
+Configuration options:
+* `HEARTBEAT_INTERVAL`: Time between heartbeats in seconds (default: 10)
+* `HEARTBEAT_TIMEOUT`: Time to wait before marking a server as down (default: 3x interval)
+
+Example usage:
+
+```bash
+# Check cluster status from the leader's perspective
+curl http://localhost:8000/cluster_status
+
+# Check cluster status from a follower's perspective
+curl http://localhost:8001/cluster_status
+```
+
+Example cluster status response:
+
+```json
+{
+  "leader": {
+    "id": "leader",
+    "url": "http://localhost:8000",
+    "status": "healthy"
+  },
+  "followers": {
+    "follower-1": {
+      "url": "http://localhost:8001",
+      "status": "healthy",
+      "last_heartbeat": 1649853215.3456,
+      "seconds_since_last_heartbeat": 2.5
+    },
+    "follower-2": {
+      "url": "http://localhost:8002",
+      "status": "down",
+      "last_heartbeat": 1649853175.1234,
+      "seconds_since_last_heartbeat": 42.7
+    },
+    "follower-3": {
+      "url": "http://localhost:8003",
+      "status": "healthy",
+      "last_heartbeat": 1649853214.7890,
+      "seconds_since_last_heartbeat": 3.1
+    }
+  },
+  "heartbeat_interval": 10
+}
+```
+
+To test failure detection:
+1. Start the leader and multiple followers
+2. Observe the cluster status showing all servers as "healthy"
+3. Stop one of the followers
+4. After the heartbeat timeout period, observe the stopped follower being marked as "down" in the cluster status
+5. Start the follower again and observe it automatically returning to "healthy" status
+
 ## TODO
 
 - [x] Checksums: Add checksums to the WAL entries to ensure data integrity.
 - [x] Segmented Log: Split WAL into multiple segment files that roll over after configured size limit.
 - [x] Idempotent Receiver Pattern: Implement unique request IDs to handle duplicate client requests properly.
+- [x] Fault Tolerance: 
+  - [x] Implement heartbeats for failure detection
+  - [ ] Add automatic retries for transient failures
+  - [ ] Implement leader election (Raft or similar consensus algorithm)
 - [ ] Compression: Add support for compressing the WAL files to save disk space.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
-- [ ] Fault Tolerance: 
-  - [ ] Implement heartbeats 
-  - [ ] Retries
-  - [ ] Failure detection.
-  - [ ] Consensus algorithms like Raft or Paxos.
 - [ ] Persistent Connection: Replace the HTTP-based replication with more efficient TCP connections.
 - [ ] Transaction Support: Implement support for transactions to ensure atomicity and consistency.
 - [ ] Sharding: Implement data partitioning to scale horizontally.
