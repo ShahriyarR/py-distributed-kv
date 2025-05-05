@@ -1,12 +1,14 @@
 import logging
 import os
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
 
-from pydistributedkv.configurator.settings.base import API_TIMEOUT, MAX_SEGMENT_SIZE
+from pydistributedkv.configurator.settings.base import API_TIMEOUT, HEARTBEAT_INTERVAL, MAX_SEGMENT_SIZE
 from pydistributedkv.domain.models import ClientRequest, LogEntry, OperationType, ReplicationRequest, WAL
+from pydistributedkv.service.heartbeat import HeartbeatService
 from pydistributedkv.service.request_deduplication import RequestDeduplicationService
 from pydistributedkv.service.storage import KeyValueStorage
 
@@ -28,6 +30,9 @@ leader_url = os.getenv("LEADER_URL", "http://localhost:8000")
 follower_id = os.getenv("FOLLOWER_ID", "follower-1")
 follower_url = os.getenv("FOLLOWER_URL", "http://localhost:8001")
 
+# Create heartbeat service
+heartbeat_service = HeartbeatService(service_name="follower", server_id=follower_id, server_url=follower_url)
+
 # Replication state
 last_applied_id = wal.get_last_id()  # Initialize with the current last ID in WAL
 
@@ -35,6 +40,14 @@ last_applied_id = wal.get_last_id()  # Initialize with the current last ID in WA
 @app.on_event("startup")
 async def startup_event():
     global last_applied_id  # noqa: F824
+
+    # Register the leader with the heartbeat service
+    heartbeat_service.register_server("leader", leader_url)
+
+    # Start heartbeat monitoring and sending
+    await heartbeat_service.start_monitoring()
+    await heartbeat_service.start_sending()
+
     # Register with leader
     try:
         response = requests.post(
@@ -50,7 +63,14 @@ async def startup_event():
             await sync_with_leader()
     except requests.RequestException as e:
         # In production, you'd implement retry logic
-        print(f"Failed to register with leader at {leader_url}: {str(e)}")
+        logger.error(f"Failed to register with leader at {leader_url}: {str(e)}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Stop heartbeat service
+    await heartbeat_service.stop()
+    logger.info("Follower server shutting down")
 
 
 async def sync_with_leader():
@@ -263,3 +283,30 @@ def get_deduplication_stats():
     stats = request_deduplication.get_stats()
     logger.info(f"Returning deduplication stats: duplicates detected={stats['total_duplicates_detected']}")
     return stats
+
+
+@app.post("/heartbeat")
+def receive_heartbeat(data: dict):
+    """Handle heartbeat from leader or other servers"""
+    server_id = data.get("server_id")
+    timestamp = data.get("timestamp", time.time())
+
+    if not server_id:
+        return {"status": "error", "message": "Missing server_id"}
+
+    heartbeat_service.record_heartbeat(server_id)
+    logger.debug(f"Received heartbeat from {server_id} at {timestamp}")
+
+    return {"status": "ok", "server_id": follower_id, "timestamp": time.time()}
+
+
+@app.get("/cluster_status")
+def get_cluster_status():
+    """Get status of the leader from this follower's perspective"""
+    leader_status = heartbeat_service.get_server_status("leader")
+
+    return {
+        "follower": {"id": follower_id, "url": follower_url, "status": "healthy"},  # Follower always reports itself as healthy
+        "leader": leader_status,
+        "heartbeat_interval": HEARTBEAT_INTERVAL,
+    }

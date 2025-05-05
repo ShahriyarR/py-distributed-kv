@@ -1,12 +1,14 @@
 import logging
 import os
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
 
-from pydistributedkv.configurator.settings.base import API_TIMEOUT, MAX_SEGMENT_SIZE
+from pydistributedkv.configurator.settings.base import API_TIMEOUT, HEARTBEAT_INTERVAL, MAX_SEGMENT_SIZE
 from pydistributedkv.domain.models import ClientRequest, FollowerRegistration, KeyValue, OperationType, WAL
+from pydistributedkv.service.heartbeat import HeartbeatService
 from pydistributedkv.service.request_deduplication import RequestDeduplicationService
 from pydistributedkv.service.storage import KeyValueStorage
 
@@ -26,6 +28,26 @@ request_deduplication = RequestDeduplicationService(service_name="leader")
 # Track followers and their replication status
 followers: dict[str, str] = {}  # follower_id -> url
 replication_status: dict[str, int] = {}  # follower_id -> last_replicated_id
+
+# Create heartbeat service
+leader_id = "leader"
+leader_url = os.getenv("LEADER_URL", "http://localhost:8000")
+heartbeat_service = HeartbeatService(service_name="leader", server_id=leader_id, server_url=leader_url)
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Start heartbeat monitoring and sending tasks
+    await heartbeat_service.start_monitoring()
+    await heartbeat_service.start_sending()
+    logger.info("Leader server started with heartbeat service")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Stop heartbeat service
+    await heartbeat_service.stop()
+    logger.info("Leader server shutting down")
 
 
 @app.get("/key/{key}")
@@ -172,7 +194,10 @@ def _process_delete_request(key: str) -> Tuple[Any, int, Optional[str]]:
 
 def _replicate_to_followers(entry):
     """Helper method to replicate an entry to all followers"""
-    for follower_id, follower_url in followers.items():
+    # Only replicate to healthy followers
+    healthy_followers = heartbeat_service.get_healthy_servers()
+
+    for follower_id, follower_url in healthy_followers.items():
         try:
             logger.info(f"Replicating entry id={entry.id} to follower {follower_id}")
             requests.post(
@@ -194,6 +219,9 @@ def register_follower(follower_data: FollowerRegistration):
 
     followers[follower_id] = follower_url
     replication_status[follower_id] = last_applied_id
+
+    # Register follower with heartbeat service
+    heartbeat_service.register_server(follower_id, follower_url)
 
     return {"status": "ok", "last_log_id": wal.get_last_id()}
 
@@ -255,3 +283,28 @@ def get_deduplication_stats():
     stats = request_deduplication.get_stats()
     logger.info(f"Returning deduplication stats: duplicates detected={stats['total_duplicates_detected']}")
     return stats
+
+
+@app.post("/heartbeat")
+def receive_heartbeat(data: dict):
+    """Handle heartbeat from followers"""
+    server_id = data.get("server_id")
+    timestamp = data.get("timestamp", time.time())
+
+    if not server_id:
+        return {"status": "error", "message": "Missing server_id"}
+
+    heartbeat_service.record_heartbeat(server_id)
+    logger.debug(f"Received heartbeat from {server_id} at {timestamp}")
+
+    return {"status": "ok", "server_id": leader_id, "timestamp": time.time()}
+
+
+@app.get("/cluster_status")
+def get_cluster_status():
+    """Get status of all servers in the cluster"""
+    return {
+        "leader": {"id": leader_id, "url": leader_url, "status": "healthy"},  # Leader always reports itself as healthy
+        "followers": heartbeat_service.get_all_statuses(),
+        "heartbeat_interval": HEARTBEAT_INTERVAL,
+    }

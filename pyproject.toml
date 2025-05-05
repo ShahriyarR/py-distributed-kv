@@ -36,6 +36,8 @@ test = [
     "pytest",
     "pytest-cov",
     "pytest-xdist",
+    "pytest-asyncio",
+    "pytest-sugar",
     "httpx",
 ]
 
@@ -67,6 +69,9 @@ skips = ["B311", "B404", "B104"]
 pythonpath = [
   "src"
 ]
+testpaths = [
+  "tests"
+]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration relatively slow (deselect with '-m \"not integration\"')",
@@ -77,5 +82,3 @@ addopts = [
     "--strict-config",
     "-ra",
 ]
-
-testpaths = "tests"
