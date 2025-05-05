@@ -3,7 +3,7 @@ import json
 import os
 import zlib
 from enum import Enum
-from typing import Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel
 
@@ -20,6 +20,7 @@ class LogEntry(BaseModel):
     key: str
     value: Optional[Any] = None
     crc: Optional[int] = None
+    version: Optional[int] = None  # Version number for the key
 
     def calculate_crc(self) -> int:
         """Calculate CRC for this entry based on its content except the CRC itself."""
@@ -39,6 +40,44 @@ class LogEntry(BaseModel):
 
 class KeyValue(BaseModel):
     value: Any
+    version: Optional[int] = None  # Optional version for specific version retrieval
+
+
+class VersionedValue(BaseModel):
+    """Model representing a value with version history"""
+
+    current_version: int  # Latest version number
+    value: Any  # Current value
+    history: Optional[Dict[int, Any]] = None  # Version -> Value mapping
+
+    def get_value(self, version: Optional[int] = None) -> Optional[Any]:
+        """Get value at specific version, or latest if version is None"""
+        if version is None:
+            return self.value
+
+        if version == self.current_version:
+            return self.value
+
+        if self.history and version in self.history:
+            return self.history[version]
+
+        return None
+
+    def update(self, value: Any, version: int) -> None:
+        """Update with a new value and version"""
+        if version <= self.current_version:
+            # Ignore updates with older versions
+            return
+
+        # Save current value to history before updating
+        if self.history is None:
+            self.history = {}
+
+        # Always keep history of previous versions
+        self.history[self.current_version] = self.value
+
+        self.value = value
+        self.current_version = version
 
 
 class ReplicationStatus(BaseModel):
@@ -54,6 +93,7 @@ class ClientRequest(BaseModel):
     operation: Optional[OperationType] = None
     key: Optional[str] = None
     value: Optional[Any] = None
+    version: Optional[int] = None  # Specific version for GET or precondition for SET
 
 
 class ReplicationRequest(BaseModel):
@@ -172,7 +212,7 @@ class WAL:
     def _roll_segment_if_needed(self):
         """Roll over to a new segment file if the current one exceeds the size limit."""
         try:
-            if os.path.getsize(self.active_segment_path) >= self.max_segment_size:
+            if os.path.exists(self.active_segment_path) and os.path.getsize(self.active_segment_path) >= self.max_segment_size:
                 next_segment_num = self._get_next_segment_number()
                 self.active_segment_path = self._create_segment_path(next_segment_num)
                 # Create the new empty segment file
@@ -183,9 +223,9 @@ class WAL:
             # If there's an issue checking the file size, just continue with the current segment
             pass
 
-    def append(self, operation: OperationType, key: str, value: Optional[Any] = None) -> LogEntry:
+    def append(self, operation: OperationType, key: str, value: Optional[Any] = None, version: Optional[int] = None) -> LogEntry:
         self.current_id += 1
-        entry = LogEntry(id=self.current_id, operation=operation, key=key, value=value)
+        entry = LogEntry(id=self.current_id, operation=operation, key=key, value=value, version=version)
         # Calculate and set CRC
         entry.crc = entry.calculate_crc()
         return self.append_entry(entry)

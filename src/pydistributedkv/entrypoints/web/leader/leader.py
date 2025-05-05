@@ -51,7 +51,12 @@ async def shutdown_event():
 
 
 @app.get("/key/{key}")
-def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
+def get_key(
+    key: str,
+    version: Optional[int] = Query(None, description="Specific version to retrieve"),
+    client_id: Optional[str] = Query(None),
+    request_id: Optional[str] = Query(None),
+):
     """Handle GET request for a specific key with deduplication support"""
     # Check for cached response if client tracking is enabled
     cached_response = _check_request_cache(client_id, request_id, key, OperationType.GET)
@@ -59,16 +64,18 @@ def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Option
         return cached_response
 
     # Get value from storage and handle errors
-    value, status_code, message = _get_value_from_storage(key)
-
-    # Handle error case
-    if status_code != 200:
-        response = {"status": "error", "message": message}
+    result = _get_value_from_storage(key, version)
+    if result is None:
+        response = {"status": "error", "message": f"Key not found: {key}"}
+        if version:
+            response["message"] = f"Key not found or version {version} not available: {key}"
         _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
-        raise HTTPException(status_code=status_code, detail=message)
+        raise HTTPException(status_code=404, detail=response["message"])
+
+    value, actual_version = result
 
     # Create success response
-    response = {"key": key, "value": value}
+    response = {"key": key, "value": value, "version": actual_version}
 
     # Cache the response if client tracking is enabled
     _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
@@ -92,16 +99,9 @@ def _check_request_cache(client_id: Optional[str], request_id: Optional[str], ke
     return None
 
 
-def _get_value_from_storage(key: str) -> Tuple[Any, int, str]:
-    """Get a value from storage and return appropriate status information"""
-    value = storage.get(key)
-
-    if value is None:
-        error_msg = f"Key not found: {key}"
-        logger.warning(error_msg)
-        return None, 404, error_msg
-
-    return value, 200, "Success"
+def _get_value_from_storage(key: str, version: Optional[int] = None) -> Optional[Tuple[Any, int]]:
+    """Get a value and its version from storage"""
+    return storage.get_with_version(key, version)
 
 
 def _cache_response_if_needed(
@@ -127,25 +127,39 @@ def set_key(key: str, kv: KeyValue, client_id: Optional[str] = Query(None), requ
         return cached_response
 
     # Process the request and get the resulting entry
-    entry = _process_set_key_request(key, kv.value)
+    entry, version = _process_set_key_request(key, kv.value, kv.version)
+
+    # Handle version conflict
+    if entry is None:
+        response = {
+            "status": "error",
+            "message": f"Version conflict: provided version {kv.version} is outdated",
+            "current_version": version,
+        }
+        _cache_response_if_needed(client_id, request_id, key, OperationType.SET, response)
+        raise HTTPException(status_code=409, detail=response["message"])
 
     # Create and cache the response
-    response = {"status": "ok", "id": entry.id}
+    response = {"status": "ok", "id": entry.id, "key": key, "version": version}
     _cache_response_if_needed(client_id, request_id, key, OperationType.SET, response, kv.value)
 
     return response
 
 
-def _process_set_key_request(key: str, value: Any):
+def _process_set_key_request(key: str, value: Any, version: Optional[int] = None):
     """Process the key-value storage operation and handle replication"""
     # Store the value
-    entry = storage.set(key, value)
-    logger.info(f"Added SET entry id={entry.id} for key={key}")
+    entry, actual_version = storage.set(key, value, version)
+
+    if entry is None:
+        return None, actual_version
+
+    logger.info(f"Added SET entry id={entry.id} for key={key}, version={actual_version}")
 
     # Replicate to followers asynchronously
     _replicate_to_followers(entry)
 
-    return entry
+    return entry, actual_version
 
 
 @app.delete("/key/{key}")
@@ -308,3 +322,27 @@ def get_cluster_status():
         "followers": heartbeat_service.get_all_statuses(),
         "heartbeat_interval": HEARTBEAT_INTERVAL,
     }
+
+
+@app.get("/key/{key}/history")
+def get_key_history(key: str):
+    """Get the version history of a key"""
+    history = storage.get_version_history(key)
+
+    if history is None:
+        raise HTTPException(status_code=404, detail=f"Key not found: {key}")
+
+    versions = sorted(history.keys())
+
+    return {"key": key, "versions": versions, "history": [{"version": v, "value": history[v]} for v in versions]}
+
+
+@app.get("/key/{key}/versions")
+def get_key_versions(key: str):
+    """Get available versions for a key"""
+    history = storage.get_version_history(key)
+
+    if history is None:
+        raise HTTPException(status_code=404, detail=f"Key not found: {key}")
+
+    return {"key": key, "versions": sorted(history.keys()), "latest_version": storage.get_latest_version(key)}

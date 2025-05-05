@@ -168,7 +168,12 @@ def _process_new_entries(entries: list[LogEntry]) -> list[LogEntry]:
 
 
 @app.get("/key/{key}")
-def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Optional[str] = Query(None)):
+def get_key(
+    key: str,
+    version: Optional[int] = Query(None, description="Specific version to retrieve"),
+    client_id: Optional[str] = Query(None),
+    request_id: Optional[str] = Query(None),
+):
     """Handle GET request for a specific key with deduplication support"""
     # Check for cached response from duplicate request
     cached_response = _check_request_cache(client_id, request_id, key, OperationType.GET)
@@ -176,15 +181,18 @@ def get_key(key: str, client_id: Optional[str] = Query(None), request_id: Option
         return cached_response
 
     # Get the value and prepare response
-    value, status_code, message = _get_value_from_storage(key)
+    result = _get_value_from_storage(key, version)
+    if result is None:
+        response = {"status": "error", "message": f"Key not found: {key}"}
+        if version:
+            response["message"] = f"Key not found or version {version} not available: {key}"
+        _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
+        raise HTTPException(status_code=404, detail=response["message"])
 
-    # Handle error case
-    if status_code != 200:
-        _cache_response_if_needed(client_id, request_id, key, OperationType.GET, {"status": "error", "message": message})
-        raise HTTPException(status_code=status_code, detail=message)
+    value, actual_version = result
 
     # Create success response
-    response = {"key": key, "value": value}
+    response = {"key": key, "value": value, "version": actual_version}
 
     # Cache the response if client tracking is enabled
     _cache_response_if_needed(client_id, request_id, key, OperationType.GET, response)
@@ -208,16 +216,9 @@ def _check_request_cache(client_id: Optional[str], request_id: Optional[str], ke
     return None
 
 
-def _get_value_from_storage(key: str) -> Tuple[Any, int, str]:
-    """Get a value from storage, returning value, status code and message"""
-    value = storage.get(key)
-
-    if value is None:
-        error_msg = f"Key not found: {key}"
-        logger.warning(error_msg)
-        return None, 404, error_msg
-
-    return value, 200, "OK"
+def _get_value_from_storage(key: str, version: Optional[int] = None) -> Optional[Tuple[Any, int]]:
+    """Get a value and its version from storage"""
+    return storage.get_with_version(key, version)
 
 
 def _cache_response_if_needed(
@@ -310,3 +311,27 @@ def get_cluster_status():
         "leader": leader_status,
         "heartbeat_interval": HEARTBEAT_INTERVAL,
     }
+
+
+@app.get("/key/{key}/history")
+def get_key_history(key: str):
+    """Get the version history of a key"""
+    history = storage.get_version_history(key)
+
+    if history is None:
+        raise HTTPException(status_code=404, detail=f"Key not found: {key}")
+
+    versions = sorted(history.keys())
+
+    return {"key": key, "versions": versions, "history": [{"version": v, "value": history[v]} for v in versions]}
+
+
+@app.get("/key/{key}/versions")
+def get_key_versions(key: str):
+    """Get available versions for a key"""
+    history = storage.get_version_history(key)
+
+    if history is None:
+        raise HTTPException(status_code=404, detail=f"Key not found: {key}")
+
+    return {"key": key, "versions": sorted(history.keys()), "latest_version": storage.get_latest_version(key)}
