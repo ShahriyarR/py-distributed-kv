@@ -516,7 +516,7 @@ To test this version, checkout to the v1.6.0 branch and follow the same setup in
   - [ ] Add automatic retries for transient failures
   - [ ] Implement leader election (Raft or similar consensus algorithm)
 - [x] Versioned Value: Track version history for each key and implement optimistic concurrency control.
-- [x] Compression: Add support for compressing the WAL files to save disk space.
+- [x] Log Compaction: Automatically compact logs to optimize storage space by removing redundant entries.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
 - [ ] Persistent Connection: Replace the HTTP-based replication with more efficient TCP connections.
 - [ ] Transaction Support: Implement support for transactions to ensure atomicity and consistency.
@@ -528,3 +528,5 @@ To test this version, checkout to the v1.6.0 branch and follow the same setup in
 Each iteration will state the missing parts and the future improvements.
 
 #### Authors:  [Shahriyar Rzayev](https://www.linkedin.com/in/shahriyar-rzayev/)
+
+`
