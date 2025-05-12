@@ -6,8 +6,9 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 from fastapi import FastAPI, HTTPException, Query
 
-from pydistributedkv.configurator.settings.base import API_TIMEOUT, HEARTBEAT_INTERVAL, MAX_SEGMENT_SIZE
+from pydistributedkv.configurator.settings.base import API_TIMEOUT, compaction_interval, HEARTBEAT_INTERVAL, MAX_SEGMENT_SIZE
 from pydistributedkv.domain.models import ClientRequest, LogEntry, OperationType, ReplicationRequest, WAL
+from pydistributedkv.service.compaction import LogCompactionService
 from pydistributedkv.service.heartbeat import HeartbeatService
 from pydistributedkv.service.request_deduplication import RequestDeduplicationService
 from pydistributedkv.service.storage import KeyValueStorage
@@ -21,6 +22,9 @@ app = FastAPI()
 # Initialize WAL and storage
 wal = WAL(os.getenv("WAL_PATH", "data/follower/wal.log"), max_segment_size=MAX_SEGMENT_SIZE)
 storage = KeyValueStorage(wal)
+
+# Initialize compaction service
+compaction_service = LogCompactionService(storage, compaction_interval=compaction_interval)
 
 # Request deduplication service
 request_deduplication = RequestDeduplicationService(service_name="follower")
@@ -39,14 +43,15 @@ last_applied_id = wal.get_last_id()  # Initialize with the current last ID in WA
 
 @app.on_event("startup")
 async def startup_event():
-    global last_applied_id  # noqa: F824
-
     # Register the leader with the heartbeat service
     heartbeat_service.register_server("leader", leader_url)
 
     # Start heartbeat monitoring and sending
     await heartbeat_service.start_monitoring()
     await heartbeat_service.start_sending()
+
+    # Start compaction service
+    await compaction_service.start()
 
     # Register with leader
     try:
@@ -70,12 +75,16 @@ async def startup_event():
 async def shutdown_event():
     # Stop heartbeat service
     await heartbeat_service.stop()
+
+    # Stop compaction service
+    await compaction_service.stop()
+
     logger.info("Follower server shutting down")
 
 
 async def sync_with_leader():
     """Synchronize the follower with the leader by fetching and applying new log entries."""
-    global last_applied_id
+    global last_applied_id  # This global declaration is necessary here
     try:
         entries = await fetch_entries_from_leader()
         if not entries:
@@ -138,7 +147,7 @@ def apply_entries_to_storage(entries: list[LogEntry]) -> int:
 
 @app.post("/replicate")
 async def replicate(req: ReplicationRequest):
-    global last_applied_id
+    global last_applied_id  # This global declaration is necessary here
 
     # Use the existing helper to parse and validate entries
     entries = _parse_and_validate_entries(req.entries, source="replication request")
@@ -335,3 +344,43 @@ def get_key_versions(key: str):
         raise HTTPException(status_code=404, detail=f"Key not found: {key}")
 
     return {"key": key, "versions": sorted(history.keys()), "latest_version": storage.get_latest_version(key)}
+
+
+@app.post("/compaction/run")
+async def run_compaction(force: bool = Query(False, description="Force compaction even if minimum interval hasn't passed")):
+    """Manually trigger log compaction"""
+    try:
+        segments_compacted, entries_removed = await compaction_service.run_compaction(force=force)
+        return {
+            "status": "success",
+            "segments_compacted": segments_compacted,
+            "entries_removed": entries_removed,
+        }
+    except Exception as e:
+        logger.error(f"Error during manual compaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Compaction error: {str(e)}") from e
+
+
+@app.get("/compaction/status")
+def get_compaction_status():
+    """Get the status of the log compaction service"""
+    return compaction_service.get_status()
+
+
+@app.post("/compaction/configure")
+def configure_compaction(
+    enabled: Optional[bool] = Query(None, description="Enable or disable compaction"),
+    interval: Optional[int] = Query(None, description="Compaction interval in seconds"),
+):
+    """Configure the log compaction service"""
+    changes = {}
+
+    if enabled is not None:
+        result = compaction_service.set_enabled(enabled)
+        changes["enabled"] = result
+
+    if interval is not None:
+        result = compaction_service.set_compaction_interval(interval)
+        changes["interval"] = result
+
+    return {"status": "success", "changes": changes}

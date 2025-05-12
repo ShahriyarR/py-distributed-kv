@@ -3,7 +3,7 @@ import json
 import os
 import zlib
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel
 
@@ -323,3 +323,199 @@ class WAL:
     def get_active_segment(self) -> str:
         """Get the path of the currently active segment."""
         return self.active_segment_path
+
+    def compact_segments(self) -> Tuple[int, int]:
+        """Compact segments by keeping only the latest operation for each key.
+
+        Returns:
+            Tuple containing:
+            - Number of segments compacted
+            - Number of entries removed
+        """
+        segments = self._get_segments_for_compaction()
+        if not segments:
+            return 0, 0
+
+        # Read all entries from segments marked for compaction
+        entries = self._read_entries_from_segments(segments)
+        if not entries:
+            return 0, 0
+
+        # Filter to get only the latest operation for each key
+        entries_to_keep = self._filter_latest_entries(entries)
+
+        # Calculate entries removed
+        entries_removed = len(entries) - len(entries_to_keep)
+
+        # Write the compacted entries and handle cleanup
+        self._write_compacted_entries(segments, entries_to_keep)
+
+        return len(segments), entries_removed
+
+    def _get_segments_for_compaction(self) -> List[str]:
+        """Get segments that should be compacted (all except the active one)"""
+        segments = self._get_all_segments()
+
+        # Don't compact if we have only one segment (which is the active one)
+        if len(segments) <= 1:
+            return []
+
+        # The last segment is the active one, we won't compact it
+        return segments[:-1]
+
+    def _read_entries_from_segments(self, segments: List[str]) -> List[LogEntry]:
+        """Read all entries from the given segments"""
+        entries = []
+        for segment in segments:
+            segment_entries = self._read_entries_from_segment(segment)
+            entries.extend(segment_entries)
+        return entries
+
+    def _filter_latest_entries(self, entries: List[LogEntry]) -> List[LogEntry]:
+        """Filter entries to keep only the latest operation for each key"""
+        key_to_latest_entry: Dict[str, LogEntry] = {}
+
+        # Track latest operation for each key
+        for entry in sorted(entries, key=lambda e: e.id):
+            if entry.operation in [OperationType.SET, OperationType.DELETE]:
+                key_to_latest_entry[entry.key] = entry
+
+        # Extract the values and sort by ID
+        result = list(key_to_latest_entry.values())
+        result.sort(key=lambda e: e.id)
+        return result
+
+    def _write_compacted_entries(self, segments_to_remove: List[str], entries: List[LogEntry]) -> None:
+        """Write compacted entries to a new segment and clean up old segments"""
+        # Create a new compacted segment
+        compacted_segment_path = self._create_compacted_segment()
+
+        # Write entries to the compacted segment
+        with open(compacted_segment_path, "w") as f:
+            for entry in entries:
+                f.write(json.dumps(entry.model_dump()) + "\n")
+
+        # Delete old segments after successful compaction
+        self._delete_segments(segments_to_remove)
+
+        # Update segment numbers to be continuous
+        self._renumber_segments()
+
+    def _delete_segments(self, segments: List[str]) -> None:
+        """Delete the given segment files"""
+        for segment in segments:
+            try:
+                os.remove(segment)
+            except OSError as e:
+                print(f"Error removing segment {segment}: {e}")
+
+    def _read_entries_from_segment(self, segment_path: str) -> List[LogEntry]:
+        """Read all entries from a segment file."""
+        if not self._is_valid_segment_file(segment_path):
+            return []
+
+        entries = []
+        for line in self._read_segment_lines(segment_path):
+            entry = self._parse_entry_from_line(line)
+            if entry:
+                entries.append(entry)
+
+        return entries
+
+    def _is_valid_segment_file(self, segment_path: str) -> bool:
+        """Check if the segment file exists and is readable."""
+        return os.path.exists(segment_path)
+
+    def _read_segment_lines(self, segment_path: str) -> List[str]:
+        """Read all lines from a segment file, handling errors."""
+        lines = []
+        try:
+            with open(segment_path, "r") as f:
+                lines = f.readlines()
+        except OSError:
+            print(f"Error accessing segment file {segment_path}")
+        return lines
+
+    def _parse_entry_from_line(self, line: str) -> Optional[LogEntry]:
+        """Parse a single entry from a line in the log file."""
+        try:
+            entry_dict = json.loads(line)
+            entry = LogEntry(**entry_dict)
+
+            if entry.crc and not entry.validate_crc():
+                return None
+
+            return entry
+        except (json.JSONDecodeError, ValueError):
+            # Skip invalid entries
+            return None
+
+    def _create_compacted_segment(self) -> str:
+        """Create a new segment file for compacted entries."""
+        return os.path.join(self.log_dir, f"{self.base_name}.compacted.temp")
+
+    def _renumber_segments(self):
+        """Rename segments to ensure contiguous numbering after compaction."""
+        segments = self._get_all_segments()
+        compacted_path = os.path.join(self.log_dir, f"{self.base_name}.compacted.temp")
+
+        # Check if compacted file exists
+        if not os.path.exists(compacted_path):
+            return
+
+        # Mark the active segment
+        self._set_active_segment(segments)
+
+        # Prepare for renumbering by renaming segments to temporary names
+        self._prepare_segments_for_renumbering(segments)
+
+        # Move the compacted file to be the first segment
+        self._rename_compacted_to_first_segment(compacted_path)
+
+        # Rename the remaining segments to have contiguous numbers
+        self._rename_remaining_segments(segments)
+
+        # Update the active segment path
+        self._update_active_segment_path()
+
+    def _set_active_segment(self, segments):
+        """Mark the active segment (the last one)."""
+        if segments:
+            # The last segment is the active one
+            self.active_segment_path = segments[-1]
+
+    def _prepare_segments_for_renumbering(self, segments):
+        """Rename existing segments to temporary names to avoid conflicts."""
+        for segment in segments[:-1]:  # Skip the last (active) segment
+            try:
+                temp_path = f"{segment}.tmp"
+                if os.path.exists(segment):
+                    os.rename(segment, temp_path)
+            except OSError as e:
+                print(f"Error renaming segment {segment}: {e}")
+
+    def _rename_compacted_to_first_segment(self, compacted_path):
+        """Rename the compacted file to be the first segment."""
+        try:
+            new_first_segment = self._create_segment_path(1)
+            os.rename(compacted_path, new_first_segment)
+        except OSError as e:
+            print(f"Error renaming compacted file: {e}")
+
+    def _rename_remaining_segments(self, segments):
+        """Rename remaining segments to have contiguous numbers."""
+        # Start from 2 because compacted file is now segment 1
+        for i, segment in enumerate(segments[:-1], 2):
+            try:
+                temp_path = f"{segment}.tmp"
+                if os.path.exists(temp_path):
+                    new_path = self._create_segment_path(i)
+                    os.rename(temp_path, new_path)
+            except OSError as e:
+                print(f"Error renaming segment {temp_path}: {e}")
+
+    def _update_active_segment_path(self):
+        """Update the active segment path to be the highest segment."""
+        segments = self._get_all_segments()
+        if segments:
+            self.active_segment_path = segments[-1]

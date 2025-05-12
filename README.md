@@ -422,6 +422,90 @@ This feature helps maintain data consistency in distributed environments by:
 
 The Versioned Value pattern is particularly valuable in distributed systems where nodes may receive updates in different orders or experience network partitions.
 
+### v1.6.0
+
+> **Added feature:** Log Compaction for optimizing storage usage and improving performance.
+
+This version adds log compaction to optimize storage and improve system performance for long-running deployments:
+
+* **Automatic Compaction:** The system periodically compacts the write-ahead log to reduce its size while preserving the current state.
+* **Redundant Entry Elimination:** Compaction removes redundant operations, keeping only the latest operation for each key.
+* **Configurable Scheduling:** Compaction can be configured to run at specific intervals or triggered manually.
+* **Compaction Monitoring:** New endpoints provide visibility into compaction history and status.
+* **Safe Execution:** Compaction runs safely alongside normal operations without disrupting service.
+
+Benefits of log compaction:
+* **Reduced Storage Requirements:** Minimizes disk space usage by removing redundant entries
+* **Improved Performance:** Faster startup times due to smaller logs that need to be replayed
+* **Enhanced Scalability:** Enables the system to manage more data over longer periods
+* **Better Resource Utilization:** Reduces I/O load by working with optimized logs
+* **Graceful Degradation:** Prevents performance decline as the system runs for extended periods
+
+How it works:
+1. The system periodically examines inactive log segments (all segments except the active one)
+2. For each key in these segments, only the latest operation (SET or DELETE) is retained
+3. A new compacted segment is created containing only these latest operations
+4. Once compaction is successful, old segments are removed and segment numbering is updated
+5. The in-memory state remains unchanged as compaction preserves the logical state
+
+Configuration options:
+* `compaction_interval`: Time between automatic compactions in seconds (default: 3600, 1 hour)
+* `min_compaction_interval`: Minimum time between compactions to prevent too frequent runs (default: 600, 10 minutes)
+* `enabled`: Toggle to enable/disable automatic compaction (default: true)
+
+Example usage:
+
+```bash
+# Manually trigger log compaction
+curl -X POST "http://localhost:8000/compaction/run"
+# Response: {"status":"success","segments_compacted":2,"entries_removed":150}
+
+# View compaction status and history
+curl "http://localhost:8000/compaction/status"
+# Response:
+{
+  "enabled": true,
+  "compaction_interval_seconds": 3600,
+  "min_compaction_interval_seconds": 600,
+  "last_compaction": "2023-08-25T14:30:45.123456",
+  "compaction_running": false,
+  "compaction_history": [
+    {
+      "timestamp": "2023-08-25T14:30:45.123456",
+      "duration_seconds": 0.75,
+      "segments_compacted": 2,
+      "entries_removed": 150
+    }
+  ]
+}
+
+# Configure compaction settings
+curl -X POST "http://localhost:8000/compaction/configure?enabled=true&interval=7200"
+# Response: {"status":"success","changes":{"enabled":true,"interval":7200}}
+```
+
+Example of log compaction effect:
+
+Before compaction (many redundant entries):
+```
+{"id": 1, "operation": "SET", "key": "user1", "value": "initial-value", "crc": 123456}
+{"id": 2, "operation": "SET", "key": "user2", "value": "hello", "crc": 234567}
+{"id": 3, "operation": "SET", "key": "user1", "value": "updated-value", "crc": 345678}
+{"id": 4, "operation": "DELETE", "key": "user2", "value": null, "crc": 456789}
+{"id": 5, "operation": "SET", "key": "user3", "value": "new-entry", "crc": 567890}
+{"id": 6, "operation": "SET", "key": "user1", "value": "final-value", "crc": 678901}
+```
+
+After compaction (only latest operations preserved):
+```
+{"id": 5, "operation": "SET", "key": "user3", "value": "new-entry", "crc": 567890}
+{"id": 6, "operation": "SET", "key": "user1", "value": "final-value", "crc": 678901}
+```
+
+Note that compaction preserves the original entry IDs and CRCs while removing redundant entries, maintaining data integrity and consistency.
+
+To test this version, checkout to the v1.6.0 branch and follow the same setup instructions as previous versions.
+
 ## TODO
 
 - [x] Checksums: Add checksums to the WAL entries to ensure data integrity.
@@ -432,7 +516,7 @@ The Versioned Value pattern is particularly valuable in distributed systems wher
   - [ ] Add automatic retries for transient failures
   - [ ] Implement leader election (Raft or similar consensus algorithm)
 - [x] Versioned Value: Track version history for each key and implement optimistic concurrency control.
-- [ ] Compression: Add support for compressing the WAL files to save disk space.
+- [x] Compression: Add support for compressing the WAL files to save disk space.
 - [ ] Conflict Resolution: Add mechanisms to resolve conflicts when multiple updates happen simultaneously.
 - [ ] Persistent Connection: Replace the HTTP-based replication with more efficient TCP connections.
 - [ ] Transaction Support: Implement support for transactions to ensure atomicity and consistency.
@@ -444,5 +528,3 @@ The Versioned Value pattern is particularly valuable in distributed systems wher
 Each iteration will state the missing parts and the future improvements.
 
 #### Authors:  [Shahriyar Rzayev](https://www.linkedin.com/in/shahriyar-rzayev/)
-
-`
