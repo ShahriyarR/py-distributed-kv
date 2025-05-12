@@ -157,3 +157,12 @@ class KeyValueStorage:
         if key not in self.data:
             return None
         return self.data[key].current_version
+
+    def compact_log(self) -> Tuple[int, int]:
+        """Compact the write-ahead log by removing redundant entries.
+
+        Returns:
+            Tuple containing (segments_compacted, entries_removed)
+        """
+        segments_compacted, entries_removed = self.wal.compact_segments()
+        return segments_compacted, entries_removed

@@ -6,8 +6,9 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 from fastapi import FastAPI, HTTPException, Query
 
-from pydistributedkv.configurator.settings.base import API_TIMEOUT, HEARTBEAT_INTERVAL, MAX_SEGMENT_SIZE
+from pydistributedkv.configurator.settings.base import API_TIMEOUT, compaction_interval, HEARTBEAT_INTERVAL, MAX_SEGMENT_SIZE
 from pydistributedkv.domain.models import ClientRequest, FollowerRegistration, KeyValue, OperationType, WAL
+from pydistributedkv.service.compaction import LogCompactionService
 from pydistributedkv.service.heartbeat import HeartbeatService
 from pydistributedkv.service.request_deduplication import RequestDeduplicationService
 from pydistributedkv.service.storage import KeyValueStorage
@@ -21,6 +22,9 @@ app = FastAPI()
 # Initialize WAL and storage
 wal = WAL(os.getenv("WAL_PATH", "data/leader/wal.log"), max_segment_size=MAX_SEGMENT_SIZE)
 storage = KeyValueStorage(wal)
+
+# Initialize compaction service
+compaction_service = LogCompactionService(storage, compaction_interval=compaction_interval)
 
 # Request deduplication service
 request_deduplication = RequestDeduplicationService(service_name="leader")
@@ -40,13 +44,21 @@ async def startup_event():
     # Start heartbeat monitoring and sending tasks
     await heartbeat_service.start_monitoring()
     await heartbeat_service.start_sending()
-    logger.info("Leader server started with heartbeat service")
+
+    # Start compaction service
+    await compaction_service.start()
+
+    logger.info("Leader server started with heartbeat and compaction services")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     # Stop heartbeat service
     await heartbeat_service.stop()
+
+    # Stop compaction service
+    await compaction_service.stop()
+
     logger.info("Leader server shutting down")
 
 
@@ -346,3 +358,43 @@ def get_key_versions(key: str):
         raise HTTPException(status_code=404, detail=f"Key not found: {key}")
 
     return {"key": key, "versions": sorted(history.keys()), "latest_version": storage.get_latest_version(key)}
+
+
+@app.post("/compaction/run")
+async def run_compaction(force: bool = Query(False, description="Force compaction even if minimum interval hasn't passed")):
+    """Manually trigger log compaction"""
+    try:
+        segments_compacted, entries_removed = await compaction_service.run_compaction(force=force)
+        return {
+            "status": "success",
+            "segments_compacted": segments_compacted,
+            "entries_removed": entries_removed,
+        }
+    except Exception as e:
+        logger.error(f"Error during manual compaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Compaction error: {str(e)}") from e
+
+
+@app.get("/compaction/status")
+def get_compaction_status():
+    """Get the status of the log compaction service"""
+    return compaction_service.get_status()
+
+
+@app.post("/compaction/configure")
+def configure_compaction(
+    enabled: Optional[bool] = Query(None, description="Enable or disable compaction"),
+    interval: Optional[int] = Query(None, description="Compaction interval in seconds"),
+):
+    """Configure the log compaction service"""
+    changes = {}
+
+    if enabled is not None:
+        result = compaction_service.set_enabled(enabled)
+        changes["enabled"] = result
+
+    if interval is not None:
+        result = compaction_service.set_compaction_interval(interval)
+        changes["interval"] = result
+
+    return {"status": "success", "changes": changes}
